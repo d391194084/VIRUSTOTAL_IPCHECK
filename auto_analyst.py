@@ -38,7 +38,7 @@ def get_vt_data(ip):
         sys.exit(1)
 
 def analyze_with_gemini(vt_data):
-    print("🧠 [2/4] 正在將數據傳送給 Gemini 3.0 Flash 進行深度分析...")
+    print("🧠 [2/4] 正在將數據傳送給 Gemini 1.5 Flash 進行深度分析...")
     
     # 使用新版 SDK 初始化客戶端
     client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY').strip())
@@ -61,9 +61,9 @@ def analyze_with_gemini(vt_data):
     四、 建議防護行動
     """
     
-    # 呼叫穩定且極速的 2.0 Flash 模型
+    # 呼叫穩定且極速的 1.5 Flash 模型
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-1.5-flash',
         contents=prompt,
     )
     
