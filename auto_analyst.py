@@ -3,7 +3,6 @@ import json
 import sys
 import os
 from datetime import datetime
-from google import genai
 from docx import Document
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -38,10 +37,15 @@ def get_vt_data(ip):
         sys.exit(1)
 
 def analyze_with_gemini(vt_data):
-    print("🧠 [2/4] 正在將數據傳送給 Gemini 1.5 Flash 進行深度分析...")
+    print("🧠 [2/4] 正在透過原生 REST API 將數據傳送給 Gemini 進行深度分析...")
     
-    # 使用新版 SDK 初始化客戶端
-    client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY').strip())
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        print("❌ 錯誤：找不到 GEMINI_API_KEY。")
+        sys.exit(1)
+        
+    # 直接呼叫最穩定的 gemini-1.5-flash 原生 API 端點
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key.strip()}"
     
     prompt = f"""
     你是一位頂級資安分析師。請根據以下 VirusTotal API 數據，產出繁體中文的專業資安分析報告。
@@ -61,13 +65,30 @@ def analyze_with_gemini(vt_data):
     四、 建議防護行動
     """
     
-    # 呼叫穩定且極速的 1.5 Flash 模型
-    response = client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=prompt,
-    )
+    # 構造原生 JSON Payload
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
     
-    return response.text
+    # 發送 HTTP POST 請求
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=data)
+    req.add_header('Content-Type', 'application/json')
+    
+    try:
+        response = urllib.request.urlopen(req)
+        result = json.loads(response.read())
+        # 提取 AI 的回答
+        return result['candidates'][0]['content']['parts'][0]['text']
+    except urllib.error.HTTPError as e:
+        error_info = e.read().decode()
+        print(f"❌ Gemini API 請求錯誤 ({e.code}): {error_info}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ 發生未知錯誤: {e}")
+        sys.exit(1)
     
 def create_word_document(ip, content):
     print("📝 [3/4] 正在生成 Word (.docx) 報告...")
