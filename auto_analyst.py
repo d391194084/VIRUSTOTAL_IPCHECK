@@ -61,9 +61,9 @@ def analyze_with_gemini(vt_data):
     四、 建議防護行動
     """
     
-    # 呼叫 Gemini 3.0 Flash 模型
+    # 呼叫穩定且極速的 2.0 Flash 模型
     response = client.models.generate_content(
-        model='gemini-3.0-flash',
+        model='gemini-2.0-flash',
         contents=prompt,
     )
     
