@@ -1,0 +1,37 @@
+name: 🛡️ VT 資安 IP 掃描器
+
+# 設定手動觸發機制，並允許輸入 IP
+on:
+  workflow_dispatch:
+    inputs:
+      target_ip:
+        description: '👉 請輸入要掃描的 IP 地址 (例如: 82.147.84.47)'
+        required: true
+        type: string
+
+jobs:
+  analyze_ip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 取得程式碼
+        uses: actions/checkout@v4
+
+      - name: 🐍 設定 Python 環境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 🚀 執行 VirusTotal 掃描腳本
+        env:
+          # 將剛剛設定的 Secrets 注入為環境變數
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          python vt_scan.py ${{ github.event.inputs.target_ip }}
+
+      - name: 📝 產出掃描報告至 GitHub 摘要面板
+        run: |
+          echo "### 🎯 掃描完成：${{ github.event.inputs.target_ip }}" >> $GITHUB_STEP_SUMMARY
+          echo "請直接點擊下方區塊右上角的複製按鈕，將內容貼給 Gem 進行深度分析！" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          cat report.md >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
