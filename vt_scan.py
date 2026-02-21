@@ -4,13 +4,13 @@ import sys
 import os
 from datetime import datetime
 
-# 1. 改為從環境變數安全讀取 API Key (由 GitHub Secrets 注入)
+# 1. 改為從環境變數安全讀取 API Key，並加入 .strip() 清除隱形換行符號
 def get_api_key():
     key = os.environ.get('VT_API_KEY')
-    if not key:
+    if not key or not key.strip():
         print("❌ 錯誤：找不到環境變數 VT_API_KEY，請確認 GitHub Secrets 設定。")
         sys.exit(1)
-    return key
+    return key.strip()  # 👈 關鍵修復：把金鑰頭尾的空白與換行符號強制去除
 
 def fetch_vt_data(url, api_key):
     req = urllib.request.Request(url)
@@ -20,7 +20,7 @@ def fetch_vt_data(url, api_key):
         response = urllib.request.urlopen(req)
         return json.loads(response.read())
     except urllib.error.HTTPError as e:
-        print(f"⚠️ API 請求錯誤 ({e.code})")
+        print(f"⚠️ API 請求錯誤 ({e.code}): {e.reason}")
         return None
     except Exception as e:
         print(f"⚠️ 未知錯誤: {e}")
@@ -36,6 +36,7 @@ def scan_ip(ip):
     # 獲取基礎資料
     base_data = fetch_vt_data(base_url, api_key)
     if not base_data:
+        print("❌ 無法獲取基礎資料，請確認 API Key 是否正確或額度是否耗盡。")
         sys.exit(1)
         
     attrs = base_data['data']['attributes']
