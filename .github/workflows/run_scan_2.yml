@@ -22,7 +22,7 @@ jobs:
 
       - name: 📦 安裝所需套件
         run: |
-          pip install google-generativeai python-docx google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          pip install google-genai python-docx google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
       - name: 🚀 執行全自動分析與上傳
         env:
