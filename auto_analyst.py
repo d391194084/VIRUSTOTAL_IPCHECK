@@ -44,8 +44,7 @@ def analyze_with_gemini(vt_data):
         print("❌ 錯誤：找不到 GEMINI_API_KEY。")
         sys.exit(1)
         
-    # 直接呼叫最穩定的 gemini-1.5-flash 原生 API 端點
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key.strip()}"
+    api_key = api_key.strip()
     
     prompt = f"""
     你是一位頂級資安分析師。請根據以下 VirusTotal API 數據，產出繁體中文的專業資安分析報告。
@@ -65,30 +64,55 @@ def analyze_with_gemini(vt_data):
     四、 建議防護行動
     """
     
-    # 構造原生 JSON Payload
     payload = {
         "contents": [{
             "parts": [{"text": prompt}]
         }]
     }
-    
-    # 發送 HTTP POST 請求
     data = json.dumps(payload).encode('utf-8')
-    req = urllib.request.Request(url, data=data)
-    req.add_header('Content-Type', 'application/json')
     
-    try:
-        response = urllib.request.urlopen(req)
-        result = json.loads(response.read())
-        # 提取 AI 的回答
-        return result['candidates'][0]['content']['parts'][0]['text']
-    except urllib.error.HTTPError as e:
-        error_info = e.read().decode()
-        print(f"❌ Gemini API 請求錯誤 ({e.code}): {error_info}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ 發生未知錯誤: {e}")
-        sys.exit(1)
+    # 🔥 終極備援清單：涵蓋 v1/v1beta 以及不同模型命名，保證一定有一個能通！
+    endpoints_to_try = [
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+    ]
+    
+    for url in endpoints_to_try:
+        # 從 URL 中提取模型名稱與版本，方便印出日誌
+        model_name = url.split('/')[-1].split(':')[0]
+        api_version = url.split('/')[3]
+        print(f"   ⏳ 正在嘗試呼叫端點: {model_name} ({api_version}) ...")
+        
+        req = urllib.request.Request(url, data=data)
+        req.add_header('Content-Type', 'application/json')
+        
+        try:
+            response = urllib.request.urlopen(req)
+            result = json.loads(response.read())
+            print(f"   ✅ 成功！已使用 {model_name} 產出分析報告。")
+            return result['candidates'][0]['content']['parts'][0]['text']
+        
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                print(f"   ⚠️ 此端點不可用 (404 NOT_FOUND)，自動嘗試下一個...")
+                continue
+            else:
+                try:
+                    error_info = e.read().decode()
+                    print(f"   ❌ API 錯誤 ({e.code}): {error_info}")
+                except:
+                    print(f"   ❌ API 錯誤 ({e.code})")
+                continue
+        except Exception as e:
+            print(f"   ❌ 發生未知錯誤: {e}")
+            continue
+
+    # 如果清單全滅，代表金鑰本身有問題
+    print("❌ 致命錯誤：所有備援模型與端點皆無法使用。請確認您的 API Key 是否有效。")
+    sys.exit(1)
     
 def create_word_document(ip, content):
     print("📝 [3/4] 正在生成 Word (.docx) 報告...")
