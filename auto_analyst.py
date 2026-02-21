@@ -3,7 +3,7 @@ import json
 import sys
 import os
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
 from docx import Document
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -38,11 +38,10 @@ def get_vt_data(ip):
         sys.exit(1)
 
 def analyze_with_gemini(vt_data):
-    print("🧠 [2/4] 正在將數據傳送給 Gemini API 進行深度分析...")
-    genai.configure(api_key=os.environ.get('GEMINI_API_KEY').strip())
+    print("🧠 [2/4] 正在將數據傳送給 Gemini 3.0 Flash 進行深度分析...")
     
-    # 設定 Gemini 模型 (使用強大的 1.5 Pro 模型)
-    model = genai.GenerativeModel('gemini-1.5-pro')
+    # 使用新版 SDK 初始化客戶端
+    client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY').strip())
     
     prompt = f"""
     你是一位頂級資安分析師。請根據以下 VirusTotal API 數據，產出繁體中文的專業資安分析報告。
@@ -62,9 +61,14 @@ def analyze_with_gemini(vt_data):
     四、 建議防護行動
     """
     
-    response = model.generate_content(prompt)
+    # 呼叫 Gemini 3.0 Flash 模型
+    response = client.models.generate_content(
+        model='gemini-3.0-flash',
+        contents=prompt,
+    )
+    
     return response.text
-
+    
 def create_word_document(ip, content):
     print("📝 [3/4] 正在生成 Word (.docx) 報告...")
     doc = Document()
