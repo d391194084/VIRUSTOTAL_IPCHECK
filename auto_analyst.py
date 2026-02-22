@@ -108,3 +108,266 @@ def get_abuse_ch_data(ip):
             
             resp_tf = urllib.request.urlopen(req_tf, timeout=15)
             res_tf = json.loads(resp_tf.read())
+            
+            if res_tf.get('query_status') == 'ok':
+                tags, malware, ioc_list = [], [], []
+                for doc in res_tf.get('data', []):
+                    if doc.get('tags'): tags.extend(doc.get('tags'))
+                    if doc.get('malware_printable'): malware.append(doc.get('malware_printable'))
+                    if doc.get('ioc'): ioc_list.append(doc.get('ioc'))
+                
+                unique_iocs = ', '.join(set(ioc_list)) if ioc_list else '無'
+                tf_result_text = f"🚨 發現惡意紀錄! 家族: {', '.join(set(malware))} / 標籤: {', '.join(set(tags))} / 命中 IOC: {unique_iocs}"
+            elif res_tf.get('query_status') == 'no_result':
+                tf_result_text = "✅ 無命中紀錄 (ThreatFox 查無精確匹配)"
+            else:
+                tf_result_text = f"⚠️ 狀態不明: {res_tf.get('query_status')}"
+        except Exception as e:
+            tf_result_text = f"⚠️ 查詢異常 ({e})"
+
+    try:
+        url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
+        data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
+        
+        req_uh = urllib.request.Request(url_uh, data=data_uh)
+        req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
+        req_uh.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        if tf_key: req_uh.add_header('Auth-Key', tf_key.strip())
+        
+        resp_uh = urllib.request.urlopen(req_uh)
+        res_uh = json.loads(resp_uh.read())
+        
+        if res_uh.get('query_status') == 'ok':
+            urls_count = len(res_uh.get('urls', []))
+            tags = []
+            for doc in res_uh.get('urls', []):
+                if doc.get('tags'): tags.extend(doc.get('tags'))
+            
+            clean_tags = list(set([t for t in tags if t]))
+            tag_str = ', '.join(clean_tags) if clean_tags else '無特定標籤'
+            urlhaus_result_text = f"🚨 發現 {urls_count} 筆惡意關聯! 標籤: {tag_str}"
+        else:
+            urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
+            
+    except Exception as e:
+        urlhaus_result_text = f"⚠️ 查詢異常 ({e})"
+        
+    return f"\n    [ThreatFox IOC 庫]: {tf_result_text}\n    [URLhaus 惡意主機庫]: {urlhaus_result_text}\n    "
+
+# ==========================================
+# 智慧引擎與排版模組
+# ==========================================
+
+def analyze_with_gemini(combined_data):
+    print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行全自動闖關...")
+    
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        print("❌ 錯誤：找不到 GEMINI_API_KEY。")
+        sys.exit(1)
+        
+    api_key = api_key.strip()
+
+    # 1. 恢復動態詢問，確切知道這把金鑰能用什麼模型
+    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        req_list = urllib.request.Request(list_url)
+        resp_list = urllib.request.urlopen(req_list)
+        models_data = json.loads(resp_list.read())
+        
+        available_models = [
+            m['name'] for m in models_data.get('models', [])
+            if 'generateContent' in m.get('supportedGenerationMethods', [])
+            and 'gemini' in m.get('name', '').lower()
+        ]
+        print(f"   📋 系統回報：您的金鑰帳面上共有 {len(available_models)} 個潛在可用模型。")
+    except Exception as e:
+        print(f"❌ 獲取模型清單失敗: {e}")
+        sys.exit(1)
+
+    # 2. 智慧排序：把已知效能最好的排前面，其他的當備胎
+    preferred = [
+        "models/gemini-2.5-flash", 
+        "models/gemini-2.0-flash", 
+        "models/gemini-1.5-flash", 
+        "models/gemini-1.5-pro", 
+        "models/gemini-pro"
+    ]
+    
+    prioritized_models = [m for m in preferred if m in available_models]
+    # 如果偏好清單全滅，就把所有可用清單加進來闖關
+    for m in available_models:
+        if m not in prioritized_models:
+            prioritized_models.append(m)
+
+    tw_tz = timezone(timedelta(hours=8))
+    current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
+
+    prompt = f"""
+    你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下多源情資數據，產出繁體中文的專業資安分析報告。
+    請特別注意：
+    1. 若在「誤報白名單 (False Positive)」內，請務必大幅降低風險評級，並在結論強調。
+    2. 請依據指定的格式輸出，不要包含任何 Markdown 標記 (如 ``` 或 **)，純文字排版即可。
+
+    【綜合情資數據】
+    {combined_data}
+
+    【輸出格式要求】
+    執行摘要
+    風險等級：(High/Medium/Low，請綜合評估各項數據的嚴重性後給出專業判定)
+
+    一、 綜合威脅概述
+    二、 VirusTotal 分析與偵測時間軸
+    三、 Abuse.ch (白名單、ThreatFox 與 URLhaus) 交叉比對
+    四、 專家結論
+    五、 建議防護行動
+    """
+    
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    data = json.dumps(payload).encode('utf-8')
+
+    # 3. 依序闖關，只要成功一個就立刻完成，不會暴衝
+    for model_name in prioritized_models:
+        print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
+        
+        # 絕對乾淨的網址，沒有 Markdown 干擾
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
+        
+        req = urllib.request.Request(url, data=data)
+        req.add_header('Content-Type', 'application/json')
+        
+        try:
+            response = urllib.request.urlopen(req)
+            result = json.loads(response.read())
+            print(f"   ✅ 闖關成功！最終為您完成分析的模型是：{model_name}")
+            return result['candidates'][0]['content']['parts'][0]['text']
+            
+        except urllib.error.HTTPError as e:
+            try:
+                error_info = json.loads(e.read().decode())
+                err_msg = error_info.get('error', {}).get('message', '未知錯誤')
+            except:
+                err_msg = str(e)
+            print(f"   ⚠️ 失敗 ({e.code}): {err_msg}")
+            continue
+        except Exception as e:
+            print(f"   ⚠️ 發生未知錯誤: {e}")
+            continue
+
+    print("❌ 致命錯誤：清單內所有模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效。")
+    sys.exit(1)
+
+def extract_risk_level(content: str) -> str:
+    for level in ['High', 'Medium', 'Low']:
+        if level.lower() in content.lower():
+            return level
+    return 'Unknown'
+
+def create_word_document(ip, content):
+    print("📝 [3/4] 正在生成企業級 Word (.docx) 報告...")
+    doc = Document()
+    
+    title = doc.add_heading('資安威脅深度分析報告', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    tw_tz = timezone(timedelta(hours=8))
+    table = doc.add_table(rows=3, cols=2)
+    table.style = 'Table Grid'
+    meta = [
+        ('評估對象', ip),
+        ('產出時間', datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S') + ' (台灣標準時間)'),
+        ('風險等級', extract_risk_level(content)),
+    ]
+    for i, (label, value) in enumerate(meta):
+        table.rows[i].cells[0].text = label
+        table.rows[i].cells[1].text = value
+        
+    doc.add_paragraph()
+    
+    section_markers = ('執行摘要', '一、', '二、', '三、', '四、', '五、', '六、')
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            doc.add_paragraph()
+            continue
+        
+        is_heading = False
+        for m in section_markers:
+            if stripped.startswith(m):
+                doc.add_heading(stripped, level=1)
+                is_heading = True
+                break
+                
+        if not is_heading:
+            doc.add_paragraph(stripped)
+            
+    filename = f"Security_Report_{ip.replace('.', '_')}.docx"
+    doc.save(filename)
+    return filename
+
+def upload_to_drive(filename):
+    print("☁️ [4/4] 正在使用您本人的專屬授權將報告上傳至 Google Drive...")
+    
+    client_id = os.environ.get('GDRIVE_CLIENT_ID')
+    client_secret = os.environ.get('GDRIVE_CLIENT_SECRET')
+    refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN')
+    folder_id = os.environ.get('GDRIVE_FOLDER_ID')
+    
+    if not all([client_id, client_secret, refresh_token, folder_id]):
+        print("❌ 錯誤：缺少 Google Drive OAuth 相關的環境變數！")
+        sys.exit(1)
+
+    creds = Credentials(
+        token=None,
+        refresh_token=refresh_token.strip(),
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id.strip(),
+        client_secret=client_secret.strip()
+    )
+    
+    service = build('drive', 'v3', credentials=creds)
+    
+    file_metadata = {'name': filename, 'parents': [folder_id.strip()]}
+    media = MediaFileUpload(filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    
+    file = service.files().create(
+        body=file_metadata, media_body=media, fields='id', supportsAllDrives=True
+    ).execute()
+    print(f"✅ 完美登頂！報告已成功存入您的 Google Drive，檔案 ID: {file.get('id')}")
+
+# ==========================================
+# 主程式執行區塊
+# ==========================================
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("用法: python auto_analyst.py <IP地址>")
+        sys.exit(1)
+        
+    target_ip = sys.argv[1]
+    
+    if not validate_ip(target_ip):
+        sys.exit(1)
+    
+    print("⚡ 🔍 [1/4] 啟動 3X 引擎：正在並行獲取 VT 與 Abuse.ch 雙核心情資...")
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_vt    = ex.submit(get_vt_data, target_ip)
+        f_fp    = ex.submit(check_false_positive, target_ip)
+        f_abuse = ex.submit(get_abuse_ch_data, target_ip)
+        
+    vt_info, fp_info, abuse_info = f_vt.result(), f_fp.result(), f_abuse.result()
+    
+    combined_intel = f"""
+    --- VirusTotal 數據 ---
+    {vt_info}
+    
+    --- Abuse.ch 誤報白名單 (False Positive) 檢查 ---
+    狀態: {fp_info}
+    
+    --- Abuse.ch (ThreatFox + URLhaus) 惡意數據 ---
+    {abuse_info}
+    """
+    
+    report_text = analyze_with_gemini(combined_intel)
+    doc_name = create_word_document(target_ip, report_text)
+    upload_to_drive(doc_name)
