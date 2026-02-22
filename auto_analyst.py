@@ -7,6 +7,7 @@ from docx import Document
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from datetime import datetime, timezone, timedelta
 
 def get_vt_data(ip):
     print(f"🔍 [1/4] 正在從 VirusTotal 獲取 {ip} 的數據...")
@@ -65,6 +66,10 @@ def analyze_with_gemini(vt_data):
         print(f"❌ 獲取模型清單失敗: {e}")
         sys.exit(1)
 
+    # 取得目前台灣時間 (UTC+8)
+    tw_tz = timezone(timedelta(hours=8))
+    current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
+    
     # --- 步驟 2：準備分析資料 ---
     prompt = f"""
     你是一位頂級資安分析師。請根據以下 VirusTotal API 數據，產出繁體中文的專業資安分析報告。
@@ -76,6 +81,7 @@ def analyze_with_gemini(vt_data):
     【輸出格式要求】
     報告標題：客戶安全性分析報告：IP 威脅評估
     評估對象：該 IP
+    產出時間：{current_time} (台灣標準時間)
     風險等級：(請根據數據評定 High/Medium/Low)
 
     一、 威脅情資概述
