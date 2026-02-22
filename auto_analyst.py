@@ -221,7 +221,7 @@ def analyze_with_gemini(combined_data):
         print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
         
         # ⚠️ 這裡絕對乾淨，沒有任何 Markdown 連結格式
-        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
         req.add_header('Content-Type', 'application/json')
@@ -311,7 +311,7 @@ def upload_to_drive(filename):
         token=None,
         refresh_token=refresh_token.strip(),
         # ⚠️ 這裡也已經清洗乾淨
-        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
+        token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id.strip(),
         client_secret=client_secret.strip()
     )
