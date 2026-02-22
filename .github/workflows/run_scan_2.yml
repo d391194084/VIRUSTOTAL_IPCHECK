@@ -29,10 +29,11 @@ jobs:
           VT_API_KEY: ${{ secrets.VT_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          # 以下三個是全新的 OAuth 授權變數
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          # 👇 補上 Abuse.ch 的金鑰
+          THREATFOX_API_KEY: ${{ secrets.THREATFOX_API_KEY }}
           
         run: |
           python auto_analyst.py ${{ github.event.inputs.target_ip }}
