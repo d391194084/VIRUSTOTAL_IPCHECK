@@ -159,7 +159,7 @@ def get_abuse_ch_data(ip):
 # ==========================================
 
 def analyze_with_gemini(combined_data):
-    print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行全自動闖關...")
+    print("🧠 [2/4] 正在執行智慧分析 (直接採用穩定版核心模型)...")
     
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
@@ -168,30 +168,17 @@ def analyze_with_gemini(combined_data):
         
     api_key = api_key.strip()
 
-    # 1. 動態獲取清單
-    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    try:
-        req_list = urllib.request.Request(list_url)
-        resp_list = urllib.request.urlopen(req_list)
-        models_data = json.loads(resp_list.read())
-        
-        available_models = [
-            m['name'] for m in models_data.get('models', [])
-            if 'generateContent' in m.get('supportedGenerationMethods', [])
-            and 'gemini' in m.get('name', '').lower()
-        ]
-        print(f"   📋 系統回報：您的金鑰帳面上共有 {len(available_models)} 個潛在可用模型。")
-    except Exception as e:
-        print(f"❌ 獲取模型清單失敗: {e}")
-        sys.exit(1)
-
-    # 2. 優先排序 (把強的放前面，沒中的就維持原清單)
-    preferred = ["models/gemini-2.5-flash", "models/gemini-2.0-flash", "models/gemini-1.5-flash", "models/gemini-pro"]
-    prioritized_models = [m for m in preferred if m in available_models] + [m for m in available_models if m not in preferred]
+    stable_models = [
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro",
+        "models/gemini-1.5-flash-latest",
+        "models/gemini-pro"
+    ]
 
     tw_tz = timezone(timedelta(hours=8))
     current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
 
+    # 🔥 關鍵修改：移除了數學評分矩陣，改為依賴 AI 的綜合邏輯判斷
     prompt = f"""
     你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下多源情資數據，產出繁體中文的專業資安分析報告。
     請特別注意：
@@ -203,8 +190,7 @@ def analyze_with_gemini(combined_data):
 
     【輸出格式要求】
     執行摘要
-    風險評分矩陣：(請基於數據產出文字表格，包含 VT 偵測率 30%、ThreatFox 30%、URLhaus 20%、白名單 10%、ASN 10% 等權重評分)
-    風險等級：(High/Medium/Low)
+    風險等級：(High/Medium/Low，請綜合評估各項數據的嚴重性後給出專業判定)
 
     一、 綜合威脅概述
     二、 VirusTotal 分析與偵測時間軸
@@ -216,11 +202,9 @@ def analyze_with_gemini(combined_data):
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     data = json.dumps(payload).encode('utf-8')
 
-    # 3. 依序闖關 (成功就會立刻 return，不會暴衝)
-    for model_name in prioritized_models:
-        print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
+    for model_name in stable_models:
+        print(f"   ⏳ 嘗試呼叫穩定模型: {model_name} ...")
         
-        # ⚠️ 這裡絕對乾淨，沒有任何 Markdown 連結格式
         url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
@@ -244,7 +228,7 @@ def analyze_with_gemini(combined_data):
             print(f"   ⚠️ 發生未知錯誤: {e}")
             continue
 
-    print("❌ 致命錯誤：清單內所有模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效。")
+    print("❌ 致命錯誤：所有穩定版模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效。")
     sys.exit(1)
 
 def extract_risk_level(content: str) -> str:
@@ -310,7 +294,6 @@ def upload_to_drive(filename):
     creds = Credentials(
         token=None,
         refresh_token=refresh_token.strip(),
-        # ⚠️ 這裡也已經清洗乾淨
         token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id.strip(),
         client_secret=client_secret.strip()
