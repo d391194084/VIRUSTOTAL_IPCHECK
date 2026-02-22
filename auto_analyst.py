@@ -1,4 +1,5 @@
 import urllib.request
+import urllib.parse  
 import json
 import sys
 import os
@@ -40,52 +41,69 @@ def get_vt_data(ip):
     except Exception as e:
         print(f"⚠️ VT 獲取失敗: {e}")
         return "狀態: VT 查詢失敗或無回應"
-
+        
 def get_abuse_ch_data(ip):
-    print(f"🌍 [1.5/4] 正在查詢 Abuse.ch (ThreatFox) 開源情資資料庫...")
+    print(f"🌍 [1.5/4] 正在深度挖掘 Abuse.ch (ThreatFox + URLhaus) 雙核心開源情資...")
     
-    # 讀取 Abuse.ch 的 API Key
     tf_key = os.environ.get('THREATFOX_API_KEY')
-    if not tf_key:
-        print("   ⚠️ 警告：找不到 THREATFOX_API_KEY，將自動跳過 Abuse.ch 查詢。")
-        return "狀態: ⚠️ 未設定 API Key，跳過 Abuse.ch 查詢"
-        
-    url = "https://threatfox-api.abuse.ch/api/v1/"
-    payload = {"query": "search_ioc", "search_term": ip}
-    data = json.dumps(payload).encode('utf-8')
+    tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過查詢"
+    urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
     
-    req = urllib.request.Request(url, data=data)
-    req.add_header('Content-Type', 'application/json')
-    req.add_header('Accept', 'application/json')
-    req.add_header('Auth-Key', tf_key.strip())  # 🔥 將金鑰放入 HTTP Header
-    
+    # --- 1. 查詢 ThreatFox (專注於 IOC/C2) ---
+    if tf_key:
+        try:
+            url_tf = "https://threatfox-api.abuse.ch/api/v1/"
+            payload_tf = {"query": "search_ioc", "search_term": ip}
+            data_tf = json.dumps(payload_tf).encode('utf-8')
+            
+            req_tf = urllib.request.Request(url_tf, data=data_tf)
+            req_tf.add_header('Content-Type', 'application/json')
+            req_tf.add_header('Accept', 'application/json')
+            req_tf.add_header('Auth-Key', tf_key.strip())
+            
+            resp_tf = urllib.request.urlopen(req_tf)
+            res_tf = json.loads(resp_tf.read())
+            
+            if res_tf.get('query_status') == 'ok':
+                tags, malware = [], []
+                for doc in res_tf.get('data', []):
+                    if doc.get('tags'): tags.extend(doc.get('tags'))
+                    if doc.get('malware_printable'): malware.append(doc.get('malware_printable'))
+                tf_result_text = f"🚨 發現惡意紀錄! 家族: {', '.join(set(malware))} / 標籤: {', '.join(set(tags))}"
+            else:
+                tf_result_text = "✅ 無命中紀錄 (Clear)"
+        except Exception as e:
+            tf_result_text = f"⚠️ 查詢異常 ({e})"
+
+    # --- 2. 查詢 URLhaus (專注於惡意檔案發佈與主機 IP，免 API Key) ---
     try:
-        response = urllib.request.urlopen(req)
-        result = json.loads(response.read())
+        url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
+        data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
         
-        if result.get('query_status') == 'ok':
+        req_uh = urllib.request.Request(url_uh, data=data_uh)
+        resp_uh = urllib.request.urlopen(req_uh)
+        res_uh = json.loads(resp_uh.read())
+        
+        if res_uh.get('query_status') == 'ok':
+            urls_count = len(res_uh.get('urls', []))
             tags = []
-            malware = []
-            for doc in result.get('data', []):
+            for doc in res_uh.get('urls', []):
                 if doc.get('tags'): tags.extend(doc.get('tags'))
-                if doc.get('malware_printable'): malware.append(doc.get('malware_printable'))
+            # 過濾掉 None 標籤並去重
+            clean_tags = list(set([t for t in tags if t]))
+            tag_str = ', '.join(clean_tags) if clean_tags else '無特定標籤'
             
-            tags = list(set(tags))
-            malware = list(set(malware))
-            
-            return f"""
-            狀態: 🚨 發現惡意紀錄 (Hit)
-            關聯惡意軟體家族: {', '.join(malware)}
-            威脅標籤: {', '.join(tags)}
-            """
+            urlhaus_result_text = f"🚨 發現 {urls_count} 筆惡意關聯! 標籤: {tag_str}"
         else:
-            return "狀態: ✅ 無命中紀錄 (Clear)"
-    except urllib.error.HTTPError as e:
-        print(f"   ⚠️ Abuse.ch 發生授權異常 ({e.code}): 請確認 API Key 是否正確。")
-        return "狀態: API 查詢拒絕存取"
+            urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
     except Exception as e:
-        print(f"   ⚠️ Abuse.ch 查詢發生未知異常: {e}")
-        return "狀態: 查詢失敗或無回應"
+        urlhaus_result_text = f"⚠️ 查詢異常 ({e})"
+        
+    # 將雙核心結果合併回傳給 AI 進行綜合判斷
+    return f"""
+    [ThreatFox IOC 庫]: {tf_result_text}
+    [URLhaus 惡意主機庫]: {urlhaus_result_text}
+    """
 
 # 🔥 修復 NameError：確保參數名稱為 combined_data
 def analyze_with_gemini(combined_data):
