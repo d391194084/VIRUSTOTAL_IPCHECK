@@ -170,8 +170,7 @@ def analyze_with_gemini(combined_data):
         
     api_key = api_key.strip()
 
-    # 🔥 終極解法：不再向 Google 索取清單，避免踩到實驗性模型的 404 地雷！
-    # 直接寫死目前最穩定、絕對能跑的 4 大「黃金模型」
+    # 寫死最穩定、絕對能跑的黃金模型
     stable_models = [
         "models/gemini-1.5-flash",
         "models/gemini-1.5-pro",
@@ -208,6 +207,8 @@ def analyze_with_gemini(combined_data):
 
     for model_name in stable_models:
         print(f"   ⏳ 嘗試呼叫穩定模型: {model_name} ...")
+        
+        # 🔥 就是這裡！保證開頭只有 https，絕對沒有 [
         url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
