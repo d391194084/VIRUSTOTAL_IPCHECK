@@ -19,7 +19,6 @@ from googleapiclient.http import MediaFileUpload
 # ==========================================
 
 def validate_ip(ip: str) -> bool:
-    """驗證 IPv4/IPv6 格式合法性"""
     try:
         ipaddress.ip_address(ip)
         return True
@@ -28,7 +27,6 @@ def validate_ip(ip: str) -> bool:
         return False
 
 def ip_in_fplist(ip: str, fp_list: list) -> bool:
-    """精確匹配 IP，避免子字串誤判 (例如 1.1.1.1 誤配 11.1.1.10)"""
     pattern = r'(?<![0-9\.])' + re.escape(ip) + r'(?![0-9\.])'
     return bool(re.search(pattern, json.dumps(fp_list)))
 
@@ -96,7 +94,7 @@ def get_abuse_ch_data(ip):
     tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過查詢"
     urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
     
-    # 1. ThreatFox：標準精確查詢
+    # 1. ThreatFox
     if tf_key:
         try:
             url_tf = "https://threatfox-api.abuse.ch/api/v1/"
@@ -120,12 +118,7 @@ def get_abuse_ch_data(ip):
                     if doc.get('ioc'): ioc_list.append(doc.get('ioc'))
                 
                 unique_iocs = ', '.join(set(ioc_list)) if ioc_list else '無'
-                tf_result_text = (
-                    f"🚨 發現惡意紀錄! "
-                    f"家族: {', '.join(set(malware))} / "
-                    f"標籤: {', '.join(set(tags))} / "
-                    f"命中 IOC: {unique_iocs}"  
-                )
+                tf_result_text = f"🚨 發現惡意紀錄! 家族: {', '.join(set(malware))} / 標籤: {', '.join(set(tags))} / 命中 IOC: {unique_iocs}"
             elif res_tf.get('query_status') == 'no_result':
                 tf_result_text = "✅ 無命中紀錄 (ThreatFox 查無精確匹配)"
             else:
@@ -133,7 +126,7 @@ def get_abuse_ch_data(ip):
         except Exception as e:
             tf_result_text = f"⚠️ 查詢異常 ({e})"
 
-    # 2. URLhaus 查詢
+    # 2. URLhaus
     try:
         url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
         data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
@@ -168,7 +161,7 @@ def get_abuse_ch_data(ip):
 # ==========================================
 
 def analyze_with_gemini(combined_data):
-    print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行智慧分析...")
+    print("🧠 [2/4] 正在執行智慧分析 (直接採用穩定版核心模型)...")
     
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
@@ -176,34 +169,15 @@ def analyze_with_gemini(combined_data):
         sys.exit(1)
         
     api_key = api_key.strip()
-    
-    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    try:
-        req_list = urllib.request.Request(list_url)
-        resp_list = urllib.request.urlopen(req_list)
-        models_data = json.loads(resp_list.read())
-        
-        available_models = [
-            m['name'] for m in models_data.get('models', [])
-            if 'generateContent' in m.get('supportedGenerationMethods', [])
-            and 'gemini' in m.get('name', '').lower()
-        ]
-    except Exception as e:
-        print(f"❌ 獲取模型清單失敗: {e}")
-        sys.exit(1)
 
-    # 🔥 關鍵防暴衝保護：限制只跑最穩的 5 個核心模型
-    models_to_try = [
-        "models/gemini-2.5-flash",
-        "models/gemini-2.0-flash",
+    # 🔥 終極解法：不再向 Google 索取清單，避免踩到實驗性模型的 404 地雷！
+    # 直接寫死目前最穩定、絕對能跑的 4 大「黃金模型」
+    stable_models = [
         "models/gemini-1.5-flash",
         "models/gemini-1.5-pro",
+        "models/gemini-1.5-flash-latest",
         "models/gemini-pro"
     ]
-    
-    prioritized_models = [m for m in models_to_try if m in available_models]
-    if not prioritized_models:
-        prioritized_models = available_models[:3]  # 最多只測 3 個，絕對不超過限制
 
     tw_tz = timezone(timedelta(hours=8))
     current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
@@ -232,9 +206,9 @@ def analyze_with_gemini(combined_data):
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     data = json.dumps(payload).encode('utf-8')
 
-    for model_name in prioritized_models:
-        print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
-        url = f"https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
+    for model_name in stable_models:
+        print(f"   ⏳ 嘗試呼叫穩定模型: {model_name} ...")
+        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
         req.add_header('Content-Type', 'application/json')
@@ -245,7 +219,6 @@ def analyze_with_gemini(combined_data):
             print(f"   ✅ 闖關成功！最終為您完成分析的模型是：{model_name}")
             return result['candidates'][0]['content']['parts'][0]['text']
             
-        # 印出真實錯誤原因，不再盲測
         except urllib.error.HTTPError as e:
             try:
                 error_info = json.loads(e.read().decode())
@@ -258,7 +231,7 @@ def analyze_with_gemini(combined_data):
             print(f"   ⚠️ 發生未知錯誤: {e}")
             continue
 
-    print("❌ 致命錯誤：所有備援模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效或配額已滿。")
+    print("❌ 致命錯誤：所有穩定版模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效。")
     sys.exit(1)
 
 def extract_risk_level(content: str) -> str:
@@ -271,11 +244,9 @@ def create_word_document(ip, content):
     print("📝 [3/4] 正在生成企業級 Word (.docx) 報告...")
     doc = Document()
     
-    # 標題與基本排版
     title = doc.add_heading('資安威脅深度分析報告', 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # 建立元數據資訊表格
     tw_tz = timezone(timedelta(hours=8))
     table = doc.add_table(rows=3, cols=2)
     table.style = 'Table Grid'
@@ -290,7 +261,6 @@ def create_word_document(ip, content):
         
     doc.add_paragraph()
     
-    # 按章節分割套用 Word 內建標題樣式
     section_markers = ('執行摘要', '一、', '二、', '三、', '四、', '五、', '六、')
     for line in content.split('\n'):
         stripped = line.strip()
@@ -353,11 +323,9 @@ if __name__ == "__main__":
         
     target_ip = sys.argv[1]
     
-    # 1. IP 格式安全防呆驗證
     if not validate_ip(target_ip):
         sys.exit(1)
     
-    # 2. 並行執行三引擎掃描 (時間縮短 3 倍)
     print("⚡ 🔍 [1/4] 啟動 3X 引擎：正在並行獲取 VT 與 Abuse.ch 雙核心情資...")
     with ThreadPoolExecutor(max_workers=3) as ex:
         f_vt    = ex.submit(get_vt_data, target_ip)
@@ -366,7 +334,6 @@ if __name__ == "__main__":
         
     vt_info, fp_info, abuse_info = f_vt.result(), f_fp.result(), f_abuse.result()
     
-    # 將三份情資完美組合
     combined_intel = f"""
     --- VirusTotal 數據 ---
     {vt_info}
@@ -378,9 +345,6 @@ if __name__ == "__main__":
     {abuse_info}
     """
     
-    # 3. 呼叫智慧分析
     report_text = analyze_with_gemini(combined_intel)
-    
-    # 4. 生成 Word 並上傳
     doc_name = create_word_document(target_ip, report_text)
     upload_to_drive(doc_name)
