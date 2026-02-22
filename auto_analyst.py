@@ -3,18 +3,39 @@ import urllib.parse
 import json
 import sys
 import os
+import ipaddress
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from docx import Document
+from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+# ==========================================
+# 核心功能模組：基礎設施驗證與 API 資料獲取
+# ==========================================
+
+def validate_ip(ip: str) -> bool:
+    """驗證 IPv4/IPv6 格式合法性"""
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        print(f"❌ 錯誤：無效的 IP 格式 '{ip}'，請檢查輸入。")
+        return False
+
+def ip_in_fplist(ip: str, fp_list: list) -> bool:
+    """精確匹配 IP，避免子字串誤判 (例如 1.1.1.1 誤配 11.1.1.10)"""
+    pattern = r'(?<![0-9\.])' + re.escape(ip) + r'(?![0-9\.])'
+    return bool(re.search(pattern, json.dumps(fp_list)))
+
 def get_vt_data(ip):
-    print(f"🔍 [1/4] 正在從 VirusTotal 獲取 {ip} 的數據...")
     vt_key = os.environ.get('VT_API_KEY')
     if not vt_key:
-        print("❌ 錯誤：找不到 VT_API_KEY。")
-        sys.exit(1)
+        return "❌ 錯誤：找不到 VT_API_KEY。"
         
     base_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
     req = urllib.request.Request(base_url)
@@ -39,12 +60,9 @@ def get_vt_data(ip):
         ASN 背景: {as_owner} (AS{asn})
         """
     except Exception as e:
-        print(f"⚠️ VT 獲取失敗: {e}")
-        return "狀態: VT 查詢失敗或無回應"
+        return f"狀態: VT 查詢失敗或無回應 ({e})"
 
 def check_false_positive(ip):
-    print(f"🛡️ [1.2/4] 正在比對 Abuse.ch Hunting API 誤報白名單 (False Positives)...")
-    
     tf_key = os.environ.get('THREATFOX_API_KEY')
     if not tf_key:
         return "⚠️ 未設定 Abuse.ch 金鑰，跳過白名單檢查"
@@ -64,31 +82,24 @@ def check_false_positive(ip):
 
         if res.get('query_status') == 'ok':
             fp_list = res.get('data', [])
-            
-            # 將整個 JSON 轉為字串進行快速比對
-            if ip in json.dumps(fp_list):
-                return f"✅ 【安全確認】此 IP ({ip}) 已被 Abuse.ch 官方明確列為 False Positive (誤報白名單)！這通常是知名服務商或正常節點，請大幅降低其風險評級。"
+            if ip_in_fplist(ip, fp_list):
+                return f"✅ 【安全確認】此 IP ({ip}) 已被 Abuse.ch 官方明確列為 False Positive (誤報白名單)！請大幅降低其風險評級。"
             else:
                 return "不在 Abuse.ch 官方誤報白名單中 (需依賴其他情資判斷)"
         else:
             return f"⚠️ 獲取白名單失敗: {res.get('query_status')}"
-
     except Exception as e:
         return f"⚠️ 白名單查詢異常 ({e})"
 
 def get_abuse_ch_data(ip):
-    print(f"🌍 [1.5/4] 正在深度挖掘 Abuse.ch (ThreatFox + URLhaus) 雙核心開源情資...")
-    
     tf_key = os.environ.get('THREATFOX_API_KEY')
     tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過查詢"
     urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
     
-    # --- 1. ThreatFox：標準精確查詢 ---
+    # 1. ThreatFox：標準精確查詢
     if tf_key:
         try:
             url_tf = "https://threatfox-api.abuse.ch/api/v1/"
-            
-            # 修正：回歸純 IP 查詢，避免 illegal_search_term 錯誤
             payload_tf = {"query": "search_ioc", "search_term": ip}
             data_tf = json.dumps(payload_tf).encode('utf-8')
             
@@ -119,26 +130,18 @@ def get_abuse_ch_data(ip):
                 tf_result_text = "✅ 無命中紀錄 (ThreatFox 查無精確匹配)"
             else:
                 tf_result_text = f"⚠️ 狀態不明: {res_tf.get('query_status')}"
-                
-        except urllib.error.HTTPError as e:
-            tf_result_text = f"⚠️ HTTP 錯誤 ({e.code}): {e.reason}"
         except Exception as e:
             tf_result_text = f"⚠️ 查詢異常 ({e})"
 
-    # --- 2. 查詢 URLhaus (專注於惡意檔案發佈與主機 IP) ---
+    # 2. URLhaus 查詢
     try:
         url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
         data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
         
         req_uh = urllib.request.Request(url_uh, data=data_uh)
-        
-        # 加入 User-Agent 偽裝成真人瀏覽器
         req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
         req_uh.add_header('Content-Type', 'application/x-www-form-urlencoded')
-        
-        # 遞上 Abuse.ch 萬能金鑰，解鎖 401 限制
-        if tf_key:
-            req_uh.add_header('Auth-Key', tf_key.strip())
+        if tf_key: req_uh.add_header('Auth-Key', tf_key.strip())
         
         resp_uh = urllib.request.urlopen(req_uh)
         res_uh = json.loads(resp_uh.read())
@@ -151,23 +154,35 @@ def get_abuse_ch_data(ip):
             
             clean_tags = list(set([t for t in tags if t]))
             tag_str = ', '.join(clean_tags) if clean_tags else '無特定標籤'
-            
             urlhaus_result_text = f"🚨 發現 {urls_count} 筆惡意關聯! 標籤: {tag_str}"
         else:
             urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
             
-    except urllib.error.HTTPError as e:
-        urlhaus_result_text = f"⚠️ 防火牆或授權拒絕 (HTTP {e.code})"
     except Exception as e:
         urlhaus_result_text = f"⚠️ 查詢異常 ({e})"
         
-    return f"""
-    [ThreatFox IOC 庫]: {tf_result_text}
-    [URLhaus 惡意主機庫]: {urlhaus_result_text}
-    """
+    return f"\n    [ThreatFox IOC 庫]: {tf_result_text}\n    [URLhaus 惡意主機庫]: {urlhaus_result_text}\n    "
+
+# ==========================================
+# 智慧引擎與排版模組
+# ==========================================
+
+PREFERRED_MODELS = [
+    "models/gemini-2.0-flash",
+    "models/gemini-1.5-pro-latest",
+    "models/gemini-1.5-pro",
+    "models/gemini-1.5-flash",
+    "models/gemini-pro"
+]
+
+def get_model_priority(available: list) -> list:
+    """將最強模型排在最前面，加速分析"""
+    preferred = [m for m in PREFERRED_MODELS if m in available]
+    others = [m for m in available if m not in PREFERRED_MODELS]
+    return preferred + others
 
 def analyze_with_gemini(combined_data):
-    print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行全自動闖關...")
+    print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行智慧分析...")
     
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
@@ -187,47 +202,39 @@ def analyze_with_gemini(combined_data):
             if 'generateContent' in m.get('supportedGenerationMethods', [])
             and 'gemini' in m.get('name', '').lower()
         ]
-        
-        print(f"   📋 系統回報：您的金鑰帳面上共有 {len(available_models)} 個潛在可用模型。")
     except Exception as e:
         print(f"❌ 獲取模型清單失敗: {e}")
         sys.exit(1)
 
-    tw_tz = timezone(timedelta(hours=8))
-    current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
-
+    prioritized_models = get_model_priority(available_models)
+    
     prompt = f"""
-    你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下 VirusTotal 與 Abuse.ch 多源情資數據，產出繁體中文的專業資安分析報告。
-    請綜合評估各個資料庫的結果。特別注意「誤報白名單 (False Positive)」的檢查結果，若在白名單內請務必在報告中強調其安全性。
-    如果 VT 沒報毒但 Abuse.ch 有命中，代表這是新型或特定的惡意基礎設施。
-    請不要輸出 Markdown 標記，純文字排版即可，因為我要直接寫入 Word。
+    你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下多源情資數據，產出繁體中文的專業資安分析報告。
+    請特別注意：
+    1. 若在「誤報白名單 (False Positive)」內，請務必大幅降低風險評級，並在結論強調。
+    2. 請依據指定的格式輸出，不要包含任何 Markdown 標記 (如 ``` 或 **)，純文字排版即可。
 
     【綜合情資數據】
     {combined_data}
 
     【輸出格式要求】
-    報告標題：客戶安全性分析報告：IP 威脅深度評估
-    評估對象：該 IP
-    產出時間：{current_time} (台灣標準時間)
-    風險等級：(請綜合多源數據評定 High/Medium/Low，若在官方白名單內請評定為 Low)
+    執行摘要
+    風險評分矩陣：(請基於數據產出文字表格，包含 VT 偵測率 30%、ThreatFox 30%、URLhaus 20%、白名單 10%、ASN 10% 等權重評分)
+    風險等級：(High/Medium/Low)
 
-    一、 綜合威脅情資概述
-    二、 VirusTotal 技術偵測與基礎設施分析
-    三、 Abuse.ch (白名單、ThreatFox 與 URLhaus) 開源情資交叉比對
-    四、 專家分析結論
+    一、 綜合威脅概述
+    二、 VirusTotal 分析與偵測時間軸
+    三、 Abuse.ch (白名單、ThreatFox 與 URLhaus) 交叉比對
+    四、 專家結論
     五、 建議防護行動
     """
     
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
     data = json.dumps(payload).encode('utf-8')
 
-    for model_name in available_models:
-        print(f"   ⏳ 正在測試模型: {model_name} ...")
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
+    for model_name in prioritized_models:
+        print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
+        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
         req.add_header('Content-Type', 'application/json')
@@ -237,28 +244,59 @@ def analyze_with_gemini(combined_data):
             result = json.loads(response.read())
             print(f"   ✅ 闖關成功！最終為您完成分析的模型是：{model_name}")
             return result['candidates'][0]['content']['parts'][0]['text']
-            
-        except urllib.error.HTTPError as e:
-            try:
-                error_info = json.loads(e.read().decode())
-                err_msg = error_info.get('error', {}).get('message', '未知錯誤')
-            except:
-                err_msg = str(e)
-            print(f"   ⚠️ 拒絕存取: {err_msg} (切換下一個)")
-            continue
-        except Exception as e:
-            print(f"   ⚠️ 發生未知錯誤: {e} (切換下一個)")
+        except Exception:
             continue
 
-    print("❌ 致命錯誤：清單內所有模型皆被 Google 伺服器拒絕存取。")
+    print("❌ 致命錯誤：所有模型皆被 Google 伺服器拒絕存取。")
     sys.exit(1)
 
+def extract_risk_level(content: str) -> str:
+    for level in ['High', 'Medium', 'Low']:
+        if level.lower() in content.lower():
+            return level
+    return 'Unknown'
+
 def create_word_document(ip, content):
-    print("📝 [3/4] 正在生成 Word (.docx) 報告...")
+    print("📝 [3/4] 正在生成企業級 Word (.docx) 報告...")
     doc = Document()
-    doc.add_heading(f'資安威脅深度分析報告 - {ip}', 0)
-    doc.add_paragraph(content)
     
+    # 標題與基本排版
+    title = doc.add_heading('資安威脅深度分析報告', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # 建立元數據資訊表格
+    tw_tz = timezone(timedelta(hours=8))
+    table = doc.add_table(rows=3, cols=2)
+    table.style = 'Table Grid'
+    meta = [
+        ('評估對象', ip),
+        ('產出時間', datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S') + ' (台灣標準時間)'),
+        ('風險等級', extract_risk_level(content)),
+    ]
+    for i, (label, value) in enumerate(meta):
+        table.rows[i].cells[0].text = label
+        table.rows[i].cells[1].text = value
+        
+    doc.add_paragraph()
+    
+    # 按章節分割套用 Word 內建標題樣式
+    section_markers = ('執行摘要', '一、', '二、', '三、', '四、', '五、', '六、')
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            doc.add_paragraph()
+            continue
+        
+        is_heading = False
+        for m in section_markers:
+            if stripped.startswith(m):
+                doc.add_heading(stripped, level=1)
+                is_heading = True
+                break
+                
+        if not is_heading:
+            doc.add_paragraph(stripped)
+            
     filename = f"Security_Report_{ip.replace('.', '_')}.docx"
     doc.save(filename)
     return filename
@@ -278,7 +316,7 @@ def upload_to_drive(filename):
     creds = Credentials(
         token=None,
         refresh_token=refresh_token.strip(),
-        token_uri="https://oauth2.googleapis.com/token",
+        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
         client_id=client_id.strip(),
         client_secret=client_secret.strip()
     )
@@ -289,13 +327,13 @@ def upload_to_drive(filename):
     media = MediaFileUpload(filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     
     file = service.files().create(
-        body=file_metadata, 
-        media_body=media, 
-        fields='id',
-        supportsAllDrives=True
+        body=file_metadata, media_body=media, fields='id', supportsAllDrives=True
     ).execute()
-    
     print(f"✅ 完美登頂！報告已成功存入您的 Google Drive，檔案 ID: {file.get('id')}")
+
+# ==========================================
+# 主程式執行區塊
+# ==========================================
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -304,10 +342,18 @@ if __name__ == "__main__":
         
     target_ip = sys.argv[1]
     
-    # 依序啟動三引擎掃描
-    vt_info = get_vt_data(target_ip)
-    fp_info = check_false_positive(target_ip)
-    abuse_info = get_abuse_ch_data(target_ip)
+    # 1. IP 格式安全防呆驗證
+    if not validate_ip(target_ip):
+        sys.exit(1)
+    
+    # 2. 並行執行三引擎掃描 (時間縮短 3 倍)
+    print("⚡ 🔍 [1/4] 啟動 3X 引擎：正在並行獲取 VT 與 Abuse.ch 雙核心情資...")
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_vt    = ex.submit(get_vt_data, target_ip)
+        f_fp    = ex.submit(check_false_positive, target_ip)
+        f_abuse = ex.submit(get_abuse_ch_data, target_ip)
+        
+    vt_info, fp_info, abuse_info = f_vt.result(), f_fp.result(), f_abuse.result()
     
     # 將三份情資完美組合
     combined_intel = f"""
@@ -321,9 +367,9 @@ if __name__ == "__main__":
     {abuse_info}
     """
     
+    # 3. 呼叫智慧分析
     report_text = analyze_with_gemini(combined_intel)
+    
+    # 4. 生成 Word 並上傳
     doc_name = create_word_document(target_ip, report_text)
-    
-    print(f"✅ Word 報告已成功在伺服器生成：{doc_name}")
-    
     upload_to_drive(doc_name)
