@@ -1,5 +1,5 @@
 import urllib.request
-import urllib.parse  
+import urllib.parse
 import json
 import sys
 import os
@@ -41,7 +41,41 @@ def get_vt_data(ip):
     except Exception as e:
         print(f"⚠️ VT 獲取失敗: {e}")
         return "狀態: VT 查詢失敗或無回應"
-        
+
+def check_false_positive(ip):
+    print(f"🛡️ [1.2/4] 正在比對 Abuse.ch Hunting API 誤報白名單 (False Positives)...")
+    
+    tf_key = os.environ.get('THREATFOX_API_KEY')
+    if not tf_key:
+        return "⚠️ 未設定 Abuse.ch 金鑰，跳過白名單檢查"
+
+    url = "https://hunting-api.abuse.ch/api/v1/"
+    payload = {"query": "get_fplist", "format": "json"}
+    data = json.dumps(payload).encode('utf-8')
+
+    req = urllib.request.Request(url, data=data)
+    req.add_header('Content-Type', 'application/json')
+    req.add_header('Auth-Key', tf_key.strip())
+    req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        res = json.loads(resp.read())
+
+        if res.get('query_status') == 'ok':
+            fp_list = res.get('data', [])
+            
+            # 將整個 JSON 轉為字串進行快速比對
+            if ip in json.dumps(fp_list):
+                return f"✅ 【安全確認】此 IP ({ip}) 已被 Abuse.ch 官方明確列為 False Positive (誤報白名單)！這通常是知名服務商或正常節點，請大幅降低其風險評級。"
+            else:
+                return "不在 Abuse.ch 官方誤報白名單中 (需依賴其他情資判斷)"
+        else:
+            return f"⚠️ 獲取白名單失敗: {res.get('query_status')}"
+
+    except Exception as e:
+        return f"⚠️ 白名單查詢異常 ({e})"
+
 def get_abuse_ch_data(ip):
     print(f"🌍 [1.5/4] 正在深度挖掘 Abuse.ch (ThreatFox + URLhaus) 雙核心開源情資...")
     
@@ -49,13 +83,13 @@ def get_abuse_ch_data(ip):
     tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過查詢"
     urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
     
-    # --- 1. ThreatFox：萬用字元修復 ---
+    # --- 1. ThreatFox：標準精確查詢 ---
     if tf_key:
         try:
             url_tf = "https://threatfox-api.abuse.ch/api/v1/"
             
-            # 🔥 關鍵修復：用 "IP:*" 觸發模糊比對，覆蓋所有 Port 組合
-            payload_tf = {"query": "search_ioc", "search_term": f"{ip}:*"}
+            # 修正：回歸純 IP 查詢，避免 illegal_search_term 錯誤
+            payload_tf = {"query": "search_ioc", "search_term": ip}
             data_tf = json.dumps(payload_tf).encode('utf-8')
             
             req_tf = urllib.request.Request(url_tf, data=data_tf)
@@ -72,7 +106,6 @@ def get_abuse_ch_data(ip):
                 for doc in res_tf.get('data', []):
                     if doc.get('tags'): tags.extend(doc.get('tags'))
                     if doc.get('malware_printable'): malware.append(doc.get('malware_printable'))
-                    # 🔥 補充：同時擷取完整 IOC（含 Port）方便報告呈現
                     if doc.get('ioc'): ioc_list.append(doc.get('ioc'))
                 
                 unique_iocs = ', '.join(set(ioc_list)) if ioc_list else '無'
@@ -80,13 +113,12 @@ def get_abuse_ch_data(ip):
                     f"🚨 發現惡意紀錄! "
                     f"家族: {', '.join(set(malware))} / "
                     f"標籤: {', '.join(set(tags))} / "
-                    f"命中 IOC: {unique_iocs}"  # 讓 AI 能看到是哪些 Port 被標記
+                    f"命中 IOC: {unique_iocs}"  
                 )
             elif res_tf.get('query_status') == 'no_result':
-                tf_result_text = "✅ 無命中紀錄 (ThreatFox Clear)"
+                tf_result_text = "✅ 無命中紀錄 (ThreatFox 查無精確匹配)"
             else:
-                # 保留原始狀態供除錯
-                tf_result_text = f"⚠️ 非預期狀態: {res_tf.get('query_status')}"
+                tf_result_text = f"⚠️ 狀態不明: {res_tf.get('query_status')}"
                 
         except urllib.error.HTTPError as e:
             tf_result_text = f"⚠️ HTTP 錯誤 ({e.code}): {e.reason}"
@@ -100,11 +132,11 @@ def get_abuse_ch_data(ip):
         
         req_uh = urllib.request.Request(url_uh, data=data_uh)
         
-        # 🔥 關鍵修復 1：加入 User-Agent 偽裝成真人瀏覽器
+        # 加入 User-Agent 偽裝成真人瀏覽器
         req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
         req_uh.add_header('Content-Type', 'application/x-www-form-urlencoded')
         
-        # 🔥 關鍵修復 2：遞上 Abuse.ch 萬能金鑰，解鎖 401 限制
+        # 遞上 Abuse.ch 萬能金鑰，解鎖 401 限制
         if tf_key:
             req_uh.add_header('Auth-Key', tf_key.strip())
         
@@ -116,7 +148,7 @@ def get_abuse_ch_data(ip):
             tags = []
             for doc in res_uh.get('urls', []):
                 if doc.get('tags'): tags.extend(doc.get('tags'))
-            # 過濾掉 None 標籤並去重
+            
             clean_tags = list(set([t for t in tags if t]))
             tag_str = ', '.join(clean_tags) if clean_tags else '無特定標籤'
             
@@ -124,19 +156,16 @@ def get_abuse_ch_data(ip):
         else:
             urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
             
-    # 這裡就是您剛剛不小心漏掉的 except 區塊 👇
     except urllib.error.HTTPError as e:
         urlhaus_result_text = f"⚠️ 防火牆或授權拒絕 (HTTP {e.code})"
     except Exception as e:
         urlhaus_result_text = f"⚠️ 查詢異常 ({e})"
         
-    # 將雙核心結果合併回傳給 AI 進行綜合判斷
     return f"""
     [ThreatFox IOC 庫]: {tf_result_text}
     [URLhaus 惡意主機庫]: {urlhaus_result_text}
     """
 
-# 🔥 修復 NameError：確保參數名稱為 combined_data
 def analyze_with_gemini(combined_data):
     print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行全自動闖關...")
     
@@ -168,8 +197,9 @@ def analyze_with_gemini(combined_data):
     current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
 
     prompt = f"""
-    你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下 VirusTotal 與 Abuse.ch 雙源情資數據，產出繁體中文的專業資安分析報告。
-    請綜合評估兩個資料庫的結果。如果 VT 沒報毒但 Abuse.ch 有命中，代表這是新型或特定的惡意基礎設施。
+    你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下 VirusTotal 與 Abuse.ch 多源情資數據，產出繁體中文的專業資安分析報告。
+    請綜合評估各個資料庫的結果。特別注意「誤報白名單 (False Positive)」的檢查結果，若在白名單內請務必在報告中強調其安全性。
+    如果 VT 沒報毒但 Abuse.ch 有命中，代表這是新型或特定的惡意基礎設施。
     請不要輸出 Markdown 標記，純文字排版即可，因為我要直接寫入 Word。
 
     【綜合情資數據】
@@ -179,11 +209,11 @@ def analyze_with_gemini(combined_data):
     報告標題：客戶安全性分析報告：IP 威脅深度評估
     評估對象：該 IP
     產出時間：{current_time} (台灣標準時間)
-    風險等級：(請綜合雙源數據評定 High/Medium/Low)
+    風險等級：(請綜合多源數據評定 High/Medium/Low，若在官方白名單內請評定為 Low)
 
     一、 綜合威脅情資概述
     二、 VirusTotal 技術偵測與基礎設施分析
-    三、 Abuse.ch (ThreatFox) 開源情資交叉比對
+    三、 Abuse.ch (白名單、ThreatFox 與 URLhaus) 開源情資交叉比對
     四、 專家分析結論
     五、 建議防護行動
     """
@@ -274,11 +304,22 @@ if __name__ == "__main__":
         
     target_ip = sys.argv[1]
     
+    # 依序啟動三引擎掃描
     vt_info = get_vt_data(target_ip)
+    fp_info = check_false_positive(target_ip)
     abuse_info = get_abuse_ch_data(target_ip)
     
-    # 這裡將變數定義為 combined_intel，並傳遞給函式
-    combined_intel = f"--- VirusTotal 數據 ---\n{vt_info}\n\n--- Abuse.ch 數據 ---\n{abuse_info}"
+    # 將三份情資完美組合
+    combined_intel = f"""
+    --- VirusTotal 數據 ---
+    {vt_info}
+    
+    --- Abuse.ch 誤報白名單 (False Positive) 檢查 ---
+    狀態: {fp_info}
+    
+    --- Abuse.ch (ThreatFox + URLhaus) 惡意數據 ---
+    {abuse_info}
+    """
     
     report_text = analyze_with_gemini(combined_intel)
     doc_name = create_word_document(target_ip, report_text)
