@@ -170,7 +170,7 @@ def upload_to_drive(filename):
         supportsAllDrives=True
     ).execute()
     
-    print(f"✅ 完美登頂！報告已成功存入您的 Google Drive，檔案 ID: {file.get('id')}"
+    print(f"✅ 完美登頂！報告已成功存入您的 Google Drive，檔案 ID: {file.get('id')}")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
