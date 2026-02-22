@@ -37,7 +37,7 @@ def get_vt_data(ip):
         sys.exit(1)
 
 def analyze_with_gemini(vt_data):
-    print("🧠 [2/4] 正在詢問 Google 伺服器可用的 AI 模型清單 (ListModels)...")
+    print("🧠 [2/4] 正在透過原生 REST API 將數據傳送給 Gemini 進行深度分析...")
     
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
@@ -45,46 +45,6 @@ def analyze_with_gemini(vt_data):
         sys.exit(1)
         
     api_key = api_key.strip()
-    
-    # --- 步驟 1：逼問伺服器，拿取這把金鑰的「專屬菜單」 ---
-    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    try:
-        req_list = urllib.request.Request(list_url)
-        resp_list = urllib.request.urlopen(req_list)
-        models_data = json.loads(resp_list.read())
-        
-        # 篩選出支援文字生成 (generateContent) 的 Gemini 模型
-        available_models = [
-            m['name'] for m in models_data.get('models', [])
-            if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini' in m.get('name', '').lower()
-        ]
-        
-        if not available_models:
-            print("❌ 致命錯誤：您的 API Key 沒有權限存取任何 Gemini 模型！請檢查 Google AI Studio 帳號狀態。")
-            sys.exit(1)
-            
-        # 自動從菜單中挑選最佳模型 (優先找 1.5-flash 或 2.0-flash)
-        chosen_model = None
-        for pref in ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-pro']:
-            matched = [m for m in available_models if pref in m]
-            if matched:
-                chosen_model = matched[0] # 選擇比對成功的第一個 (例如 models/gemini-1.5-flash-001)
-                break
-                
-        if not chosen_model:
-            chosen_model = available_models[0] # 如果都沒對上，就硬抓清單裡的第一個可用模型
-            
-        print(f"   ✅ 成功獲取授權清單！系統自動選定您的專屬可用模型：{chosen_model}")
-
-    except Exception as e:
-        print(f"❌ 獲取模型清單失敗: {e}")
-        sys.exit(1)
-
-    # --- 步驟 2：使用剛才抓到的正確名字，正式發送分析請求 ---
-    print(f"🧠 正在將數據傳送給 {chosen_model} 進行深度分析...")
-    
-    # 注意這裡的 URL 是動態注入的，絕對不會再 404！
-    url = f"https://generativelanguage.googleapis.com/v1beta/{chosen_model}:generateContent?key={api_key}"
     
     prompt = f"""
     你是一位頂級資安分析師。請根據以下 VirusTotal API 數據，產出繁體中文的專業資安分析報告。
@@ -111,21 +71,43 @@ def analyze_with_gemini(vt_data):
     }
     data = json.dumps(payload).encode('utf-8')
     
-    req = urllib.request.Request(url, data=data)
-    req.add_header('Content-Type', 'application/json')
+    # 🔥 放棄不準確的 ListModels，改用「硬闖」清單
+    # 這裡的順序是精心安排的：從目前最穩定、新用戶必定開放的模型開始
+    models_to_try = [
+        "gemini-1.5-flash",       # 目前全球最穩定且新用戶必備的標準版
+        "gemini-1.5-flash-8b",    # 限制極少的輕量極速版
+        "gemini-1.5-pro",         # 若有權限則能產出最強分析
+        "gemini-pro"              # 最舊但 100% 絕對不會被擋的 1.0 版
+    ]
     
-    try:
-        response = urllib.request.urlopen(req)
-        result = json.loads(response.read())
-        print("   ✅ AI 分析成功！")
-        return result['candidates'][0]['content']['parts'][0]['text']
-    except urllib.error.HTTPError as e:
-        error_info = e.read().decode()
-        print(f"   ❌ API 錯誤 ({e.code}): {error_info}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"   ❌ 發生未知錯誤: {e}")
-        sys.exit(1)
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        print(f"   ⏳ 正在嘗試使用模型: {model_name} ...")
+        
+        req = urllib.request.Request(url, data=data)
+        req.add_header('Content-Type', 'application/json')
+        
+        try:
+            response = urllib.request.urlopen(req)
+            result = json.loads(response.read())
+            print(f"   ✅ 成功！已使用 {model_name} 產出分析報告。")
+            return result['candidates'][0]['content']['parts'][0]['text']
+        
+        except urllib.error.HTTPError as e:
+            try:
+                error_info = json.loads(e.read().decode())
+                error_msg = error_info.get('error', {}).get('message', '未知原因')
+            except:
+                error_msg = str(e)
+            print(f"   ⚠️ 此模型不可用 ({e.code}): {error_msg}，自動切換下一個...")
+            continue
+        except Exception as e:
+            print(f"   ⚠️ 發生未知錯誤: {e}，自動切換下一個...")
+            continue
+
+    # 如果連最基礎的 gemini-pro 都失敗，才是真的出大問題
+    print("❌ 致命錯誤：所有備援模型皆被 Google 拒絕。請確認您的 API Key 狀態。")
+    sys.exit(1)
     
 def create_word_document(ip, content):
     print("📝 [3/4] 正在生成 Word (.docx) 報告...")
