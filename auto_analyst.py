@@ -41,7 +41,7 @@ def get_vt_data(ip):
     except Exception as e:
         print(f"⚠️ VT 獲取失敗: {e}")
         return "狀態: VT 查詢失敗或無回應"
-        
+
 def get_abuse_ch_data(ip):
     print(f"🌍 [1.5/4] 正在深度挖掘 Abuse.ch (ThreatFox + URLhaus) 雙核心開源情資...")
     
@@ -60,6 +60,8 @@ def get_abuse_ch_data(ip):
             req_tf.add_header('Content-Type', 'application/json')
             req_tf.add_header('Accept', 'application/json')
             req_tf.add_header('Auth-Key', tf_key.strip())
+            # 加入偽裝，避免被防火牆阻擋
+            req_tf.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
             
             resp_tf = urllib.request.urlopen(req_tf)
             res_tf = json.loads(resp_tf.read())
@@ -71,7 +73,7 @@ def get_abuse_ch_data(ip):
                     if doc.get('malware_printable'): malware.append(doc.get('malware_printable'))
                 tf_result_text = f"🚨 發現惡意紀錄! 家族: {', '.join(set(malware))} / 標籤: {', '.join(set(tags))}"
             else:
-                tf_result_text = "✅ 無命中紀錄 (Clear)"
+                tf_result_text = "✅ 無命中紀錄 (因 API 需精確匹配 Port，查無純 IP)"
         except Exception as e:
             tf_result_text = f"⚠️ 查詢異常 ({e})"
 
@@ -81,6 +83,11 @@ def get_abuse_ch_data(ip):
         data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
         
         req_uh = urllib.request.Request(url_uh, data=data_uh)
+        
+        # 🔥 關鍵修復：加入 User-Agent 偽裝成真人瀏覽器，完美繞過 Cloudflare 401/403 阻擋
+        req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
+        req_uh.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        
         resp_uh = urllib.request.urlopen(req_uh)
         res_uh = json.loads(resp_uh.read())
         
@@ -96,6 +103,8 @@ def get_abuse_ch_data(ip):
             urlhaus_result_text = f"🚨 發現 {urls_count} 筆惡意關聯! 標籤: {tag_str}"
         else:
             urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
+    except urllib.error.HTTPError as e:
+        urlhaus_result_text = f"⚠️ 防火牆拒絕存取 (HTTP {e.code})"
     except Exception as e:
         urlhaus_result_text = f"⚠️ 查詢異常 ({e})"
         
