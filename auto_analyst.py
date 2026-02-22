@@ -41,7 +41,6 @@ def get_vt_data(ip):
     except Exception as e:
         print(f"⚠️ VT 獲取失敗: {e}")
         return "狀態: VT 查詢失敗或無回應"
-
 def get_abuse_ch_data(ip):
     print(f"🌍 [1.5/4] 正在深度挖掘 Abuse.ch (ThreatFox + URLhaus) 雙核心開源情資...")
     
@@ -60,7 +59,7 @@ def get_abuse_ch_data(ip):
             req_tf.add_header('Content-Type', 'application/json')
             req_tf.add_header('Accept', 'application/json')
             req_tf.add_header('Auth-Key', tf_key.strip())
-            # 加入偽裝，避免被防火牆阻擋
+            # 偽裝瀏覽器
             req_tf.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
             
             resp_tf = urllib.request.urlopen(req_tf)
@@ -84,16 +83,35 @@ def get_abuse_ch_data(ip):
         
         req_uh = urllib.request.Request(url_uh, data=data_uh)
         
-        # 加上 User-Agent 偽裝成真人瀏覽器
+        # 🔥 關鍵修復 1：加入 User-Agent 偽裝成真人瀏覽器
         req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
         req_uh.add_header('Content-Type', 'application/x-www-form-urlencoded')
         
-        # 🔥 終極解法：URLhaus 伺服器也在討金鑰了，我們直接把 Abuse.ch 的萬能金鑰遞給它！
+        # 🔥 關鍵修復 2：遞上 Abuse.ch 萬能金鑰，解鎖 401 限制
         if tf_key:
             req_uh.add_header('Auth-Key', tf_key.strip())
         
         resp_uh = urllib.request.urlopen(req_uh)
         res_uh = json.loads(resp_uh.read())
+        
+        if res_uh.get('query_status') == 'ok':
+            urls_count = len(res_uh.get('urls', []))
+            tags = []
+            for doc in res_uh.get('urls', []):
+                if doc.get('tags'): tags.extend(doc.get('tags'))
+            # 過濾掉 None 標籤並去重
+            clean_tags = list(set([t for t in tags if t]))
+            tag_str = ', '.join(clean_tags) if clean_tags else '無特定標籤'
+            
+            urlhaus_result_text = f"🚨 發現 {urls_count} 筆惡意關聯! 標籤: {tag_str}"
+        else:
+            urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
+            
+    # 這裡就是您剛剛不小心漏掉的 except 區塊 👇
+    except urllib.error.HTTPError as e:
+        urlhaus_result_text = f"⚠️ 防火牆或授權拒絕 (HTTP {e.code})"
+    except Exception as e:
+        urlhaus_result_text = f"⚠️ 查詢異常 ({e})"
         
     # 將雙核心結果合併回傳給 AI 進行綜合判斷
     return f"""
