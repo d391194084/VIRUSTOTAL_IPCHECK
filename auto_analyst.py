@@ -94,7 +94,6 @@ def get_abuse_ch_data(ip):
     tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過查詢"
     urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
     
-    # 1. ThreatFox
     if tf_key:
         try:
             url_tf = "https://threatfox-api.abuse.ch/api/v1/"
@@ -126,7 +125,6 @@ def get_abuse_ch_data(ip):
         except Exception as e:
             tf_result_text = f"⚠️ 查詢異常 ({e})"
 
-    # 2. URLhaus
     try:
         url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
         data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
@@ -161,7 +159,7 @@ def get_abuse_ch_data(ip):
 # ==========================================
 
 def analyze_with_gemini(combined_data):
-    print("🧠 [2/4] 正在執行智慧分析 (直接採用穩定版核心模型)...")
+    print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行全自動闖關...")
     
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
@@ -170,13 +168,26 @@ def analyze_with_gemini(combined_data):
         
     api_key = api_key.strip()
 
-    # 寫死最穩定、絕對能跑的黃金模型
-    stable_models = [
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-pro",
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-pro"
-    ]
+    # 1. 動態獲取清單
+    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        req_list = urllib.request.Request(list_url)
+        resp_list = urllib.request.urlopen(req_list)
+        models_data = json.loads(resp_list.read())
+        
+        available_models = [
+            m['name'] for m in models_data.get('models', [])
+            if 'generateContent' in m.get('supportedGenerationMethods', [])
+            and 'gemini' in m.get('name', '').lower()
+        ]
+        print(f"   📋 系統回報：您的金鑰帳面上共有 {len(available_models)} 個潛在可用模型。")
+    except Exception as e:
+        print(f"❌ 獲取模型清單失敗: {e}")
+        sys.exit(1)
+
+    # 2. 優先排序 (把強的放前面，沒中的就維持原清單)
+    preferred = ["models/gemini-2.5-flash", "models/gemini-2.0-flash", "models/gemini-1.5-flash", "models/gemini-pro"]
+    prioritized_models = [m for m in preferred if m in available_models] + [m for m in available_models if m not in preferred]
 
     tw_tz = timezone(timedelta(hours=8))
     current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
@@ -205,11 +216,12 @@ def analyze_with_gemini(combined_data):
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     data = json.dumps(payload).encode('utf-8')
 
-    for model_name in stable_models:
-        print(f"   ⏳ 嘗試呼叫穩定模型: {model_name} ...")
+    # 3. 依序闖關 (成功就會立刻 return，不會暴衝)
+    for model_name in prioritized_models:
+        print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
         
-        # 🔥 就是這裡！保證開頭只有 https，絕對沒有 [
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
+        # ⚠️ 這裡絕對乾淨，沒有任何 Markdown 連結格式
+        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
         req.add_header('Content-Type', 'application/json')
@@ -232,7 +244,7 @@ def analyze_with_gemini(combined_data):
             print(f"   ⚠️ 發生未知錯誤: {e}")
             continue
 
-    print("❌ 致命錯誤：所有穩定版模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效。")
+    print("❌ 致命錯誤：清單內所有模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效。")
     sys.exit(1)
 
 def extract_risk_level(content: str) -> str:
@@ -298,7 +310,8 @@ def upload_to_drive(filename):
     creds = Credentials(
         token=None,
         refresh_token=refresh_token.strip(),
-        token_uri="https://oauth2.googleapis.com/token",
+        # ⚠️ 這裡也已經清洗乾淨
+        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
         client_id=client_id.strip(),
         client_secret=client_secret.strip()
     )
