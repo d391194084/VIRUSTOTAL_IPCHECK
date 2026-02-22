@@ -41,6 +41,7 @@ def get_vt_data(ip):
     except Exception as e:
         print(f"⚠️ VT 獲取失敗: {e}")
         return "狀態: VT 查詢失敗或無回應"
+        
 def get_abuse_ch_data(ip):
     print(f"🌍 [1.5/4] 正在深度挖掘 Abuse.ch (ThreatFox + URLhaus) 雙核心開源情資...")
     
@@ -48,31 +49,47 @@ def get_abuse_ch_data(ip):
     tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過查詢"
     urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
     
-    # --- 1. 查詢 ThreatFox (專注於 IOC/C2) ---
+    # --- 1. ThreatFox：萬用字元修復 ---
     if tf_key:
         try:
             url_tf = "https://threatfox-api.abuse.ch/api/v1/"
-            payload_tf = {"query": "search_ioc", "search_term": ip}
+            
+            # 🔥 關鍵修復：用 "IP:*" 觸發模糊比對，覆蓋所有 Port 組合
+            payload_tf = {"query": "search_ioc", "search_term": f"{ip}:*"}
             data_tf = json.dumps(payload_tf).encode('utf-8')
             
             req_tf = urllib.request.Request(url_tf, data=data_tf)
             req_tf.add_header('Content-Type', 'application/json')
             req_tf.add_header('Accept', 'application/json')
             req_tf.add_header('Auth-Key', tf_key.strip())
-            # 偽裝瀏覽器
             req_tf.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
             
-            resp_tf = urllib.request.urlopen(req_tf)
+            resp_tf = urllib.request.urlopen(req_tf, timeout=15)
             res_tf = json.loads(resp_tf.read())
             
             if res_tf.get('query_status') == 'ok':
-                tags, malware = [], []
+                tags, malware, ioc_list = [], [], []
                 for doc in res_tf.get('data', []):
                     if doc.get('tags'): tags.extend(doc.get('tags'))
                     if doc.get('malware_printable'): malware.append(doc.get('malware_printable'))
-                tf_result_text = f"🚨 發現惡意紀錄! 家族: {', '.join(set(malware))} / 標籤: {', '.join(set(tags))}"
+                    # 🔥 補充：同時擷取完整 IOC（含 Port）方便報告呈現
+                    if doc.get('ioc'): ioc_list.append(doc.get('ioc'))
+                
+                unique_iocs = ', '.join(set(ioc_list)) if ioc_list else '無'
+                tf_result_text = (
+                    f"🚨 發現惡意紀錄! "
+                    f"家族: {', '.join(set(malware))} / "
+                    f"標籤: {', '.join(set(tags))} / "
+                    f"命中 IOC: {unique_iocs}"  # 讓 AI 能看到是哪些 Port 被標記
+                )
+            elif res_tf.get('query_status') == 'no_result':
+                tf_result_text = "✅ 無命中紀錄 (ThreatFox Clear)"
             else:
-                tf_result_text = "✅ 無命中紀錄 (因 API 需精確匹配 Port，查無純 IP)"
+                # 保留原始狀態供除錯
+                tf_result_text = f"⚠️ 非預期狀態: {res_tf.get('query_status')}"
+                
+        except urllib.error.HTTPError as e:
+            tf_result_text = f"⚠️ HTTP 錯誤 ({e.code}): {e.reason}"
         except Exception as e:
             tf_result_text = f"⚠️ 查詢異常 ({e})"
 
