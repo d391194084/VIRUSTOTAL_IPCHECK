@@ -135,22 +135,42 @@ def create_word_document(ip, content):
     filename = f"Security_Report_{ip.replace('.', '_')}.docx"
     doc.save(filename)
     return filename
-
+    
 def upload_to_drive(filename):
-    print("☁️ [4/4] 正在將報告上傳至 Google Drive...")
-    creds_json = json.loads(os.environ.get('GDRIVE_CREDENTIALS'))
+    print("☁️ [4/4] 正在使用您本人的專屬授權將報告上傳至 Google Drive...")
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    
+    # 讀取 GitHub Secrets
+    client_id = os.environ.get('GDRIVE_CLIENT_ID').strip()
+    client_secret = os.environ.get('GDRIVE_CLIENT_SECRET').strip()
+    refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN').strip()
     folder_id = os.environ.get('GDRIVE_FOLDER_ID').strip()
     
-    creds = service_account.Credentials.from_service_account_info(
-        creds_json, scopes=['https://www.googleapis.com/auth/drive.file']
+    # 使用 Refresh Token 自動換取登入權限
+    creds = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret
     )
+    
     service = build('drive', 'v3', credentials=creds)
     
     file_metadata = {'name': filename, 'parents': [folder_id]}
     media = MediaFileUpload(filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"✅ 上傳成功！Google Drive 檔案 ID: {file.get('id')}")
+    # 執行上傳 (supportsAllDrives=True 確保相容性)
+    file = service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields='id',
+        supportsAllDrives=True
+    ).execute()
+    
+    print(f"✅ 完美登頂！報告已成功存入您的 Google Drive，檔案 ID: {file.get('id')}"
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
