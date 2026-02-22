@@ -298,7 +298,7 @@ def upload_to_drive(filename):
     creds = Credentials(
         token=None,
         refresh_token=refresh_token.strip(),
-        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
+        token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id.strip(),
         client_secret=client_secret.strip()
     )
