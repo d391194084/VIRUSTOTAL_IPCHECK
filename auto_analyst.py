@@ -167,20 +167,6 @@ def get_abuse_ch_data(ip):
 # 智慧引擎與排版模組
 # ==========================================
 
-PREFERRED_MODELS = [
-    "models/gemini-2.0-flash",
-    "models/gemini-1.5-pro-latest",
-    "models/gemini-1.5-pro",
-    "models/gemini-1.5-flash",
-    "models/gemini-pro"
-]
-
-def get_model_priority(available: list) -> list:
-    """將最強模型排在最前面，加速分析"""
-    preferred = [m for m in PREFERRED_MODELS if m in available]
-    others = [m for m in available if m not in PREFERRED_MODELS]
-    return preferred + others
-
 def analyze_with_gemini(combined_data):
     print("🧠 [2/4] 正在向 Google 索取可用模型總表並執行智慧分析...")
     
@@ -206,8 +192,22 @@ def analyze_with_gemini(combined_data):
         print(f"❌ 獲取模型清單失敗: {e}")
         sys.exit(1)
 
-    prioritized_models = get_model_priority(available_models)
+    # 🔥 關鍵防暴衝保護：限制只跑最穩的 5 個核心模型
+    models_to_try = [
+        "models/gemini-2.5-flash",
+        "models/gemini-2.0-flash",
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro",
+        "models/gemini-pro"
+    ]
     
+    prioritized_models = [m for m in models_to_try if m in available_models]
+    if not prioritized_models:
+        prioritized_models = available_models[:3]  # 最多只測 3 個，絕對不超過限制
+
+    tw_tz = timezone(timedelta(hours=8))
+    current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
+
     prompt = f"""
     你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下多源情資數據，產出繁體中文的專業資安分析報告。
     請特別注意：
@@ -244,10 +244,21 @@ def analyze_with_gemini(combined_data):
             result = json.loads(response.read())
             print(f"   ✅ 闖關成功！最終為您完成分析的模型是：{model_name}")
             return result['candidates'][0]['content']['parts'][0]['text']
-        except Exception:
+            
+        # 印出真實錯誤原因，不再盲測
+        except urllib.error.HTTPError as e:
+            try:
+                error_info = json.loads(e.read().decode())
+                err_msg = error_info.get('error', {}).get('message', '未知錯誤')
+            except:
+                err_msg = str(e)
+            print(f"   ⚠️ 失敗 ({e.code}): {err_msg}")
+            continue
+        except Exception as e:
+            print(f"   ⚠️ 發生未知錯誤: {e}")
             continue
 
-    print("❌ 致命錯誤：所有模型皆被 Google 伺服器拒絕存取。")
+    print("❌ 致命錯誤：所有備援模型皆被 Google 伺服器拒絕存取。請確認您的 API Key 是否有效或配額已滿。")
     sys.exit(1)
 
 def extract_risk_level(content: str) -> str:
