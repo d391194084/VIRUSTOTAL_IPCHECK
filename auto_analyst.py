@@ -92,8 +92,8 @@ def check_false_positive(ip):
 
 def get_abuse_ch_data(ip):
     tf_key = os.environ.get('THREATFOX_API_KEY')
-    tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過查詢"
-    urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
+    tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過深度獵殺分析"
+    urlhaus_result_text = "✅ 查無惡意載體託管紀錄 (Clean)"
     
     if tf_key:
         try:
@@ -103,7 +103,6 @@ def get_abuse_ch_data(ip):
             
             req_tf = urllib.request.Request(url_tf, data=data_tf)
             req_tf.add_header('Content-Type', 'application/json')
-            req_tf.add_header('Accept', 'application/json')
             req_tf.add_header('Auth-Key', tf_key.strip())
             req_tf.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
             
@@ -111,50 +110,44 @@ def get_abuse_ch_data(ip):
             res_tf = json.loads(resp_tf.read())
             
             if res_tf.get('query_status') == 'ok':
-                tags, malware, ioc_list = [], [], []
+                findings = []
                 for doc in res_tf.get('data', []):
-                    if doc.get('tags'): tags.extend(doc.get('tags'))
-                    if doc.get('malware_printable'): malware.append(doc.get('malware_printable'))
-                    if doc.get('ioc'): ioc_list.append(doc.get('ioc'))
+                    malware = doc.get('malware_printable', 'Unknown')
+                    confidence = doc.get('confidence_level', 0)
+                    tags = ", ".join(doc.get('tags') or ["無標籤"])
+                    findings.append(f"● [家族: {malware}] (置信度: {confidence}%) - 標籤: {tags}")
                 
-                unique_iocs = ', '.join(set(ioc_list)) if ioc_list else '無'
-                tf_result_text = f"🚨 發現惡意紀錄! 家族: {', '.join(set(malware))} / 標籤: {', '.join(set(tags))} / 命中 IOC: {unique_iocs}"
+                tf_result_text = "🚨 【獵殺命中】發現以下惡意威脅關聯：\n      " + "\n      ".join(set(findings))
             elif res_tf.get('query_status') == 'no_result':
-                tf_result_text = "✅ 無命中紀錄 (ThreatFox 查無精確匹配)"
+                tf_result_text = "✅ 數據庫比對完成：無明確威脅家族命中 (Clear)"
             else:
-                tf_result_text = f"⚠️ 狀態不明: {res_tf.get('query_status')}"
+                tf_result_text = f"⚠️ 查詢狀態異常: {res_tf.get('query_status')}"
         except Exception as e:
-            tf_result_text = f"⚠️ 查詢異常 ({e})"
+            tf_result_text = f"⚠️ ThreatFox 獵殺分析異常 ({e})"
 
     try:
         url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
         data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
-        
         req_uh = urllib.request.Request(url_uh, data=data_uh)
-        req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
-        req_uh.add_header('Content-Type', 'application/x-www-form-urlencoded')
-        if tf_key: req_uh.add_header('Auth-Key', tf_key.strip())
+        req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
         
         resp_uh = urllib.request.urlopen(req_uh)
         res_uh = json.loads(resp_uh.read())
         
         if res_uh.get('query_status') == 'ok':
             urls_count = len(res_uh.get('urls', []))
-            tags = []
-            for doc in res_uh.get('urls', []):
-                if doc.get('tags'): tags.extend(doc.get('tags'))
+            blacklisted = res_uh.get('blacklists', {})
+            spamhaus = "🚨 命中" if blacklisted.get('spamhaus_dbl') == 'abused' else "✅ 未命中"
             
-            clean_tags = list(set([t for t in tags if t]))
-            tag_str = ', '.join(clean_tags) if clean_tags else '無特定標籤'
-            urlhaus_result_text = f"🚨 發現 {urls_count} 筆惡意關聯! 標籤: {tag_str}"
+            urlhaus_result_text = f"🚨 【惡意託管】此 IP 曾分發 {urls_count} 個惡意檔案！Spamhaus 狀態: {spamhaus}"
         else:
-            urlhaus_result_text = "✅ 無命中紀錄 (Clear)"
+            urlhaus_result_text = "✅ 無惡意 URL 分發紀錄 (Clear)"
             
     except Exception as e:
-        urlhaus_result_text = f"⚠️ 查詢異常 ({e})"
+        urlhaus_result_text = f"⚠️ URLhaus 數據分析異常 ({e})"
         
-    return f"\n    [ThreatFox IOC 庫]: {tf_result_text}\n    [URLhaus 惡意主機庫]: {urlhaus_result_text}\n    "
-
+    return f"\n    [Abuse.ch ThreatFox 深度獵殺]:\n      {tf_result_text}\n    [Abuse.ch URLhaus 行為分析]:\n      {urlhaus_result_text}\n    "
+    
 def check_firehol_l3(ip: str) -> str:
     """新增：動態下載 FireHOL Level 3 清單並比對 IP"""
     url = "https://iplists.firehol.org/files/firehol_level3.netset"
