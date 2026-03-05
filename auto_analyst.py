@@ -278,8 +278,13 @@ def analyze_with_gemini(combined_data):
         if m not in prioritized_models:
             prioritized_models.append(m)
 
+    tw_tz = timezone(timedelta(hours=8))
+    current_date = datetime.now(tw_tz).strftime('%Y年%m月%d日')
+
     prompt = f"""
+    今日日期：{current_date}（台灣標準時間）
     你是一位專業的資安分析顧問。請根據以下多源情資，為企業資訊部門產出一份客觀、精確的分析報告。
+    報告日期請使用上方提供的今日日期，不得自行推測或捏造。
     
     【重要原則】
     1. 實事求是：僅針對有證據的威脅進行分析。若數據顯示為「無命中」或「API 報錯」，請如實說明為「查無紀錄」或「技術性缺口」，不要過度推測尚未發現的威脅。
