@@ -13,6 +13,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from google.auth.exceptions import RefreshError  # 新增：用於精準捕捉 Token 過期錯誤
 
 # ==========================================
 # 核心功能模組：基礎設施驗證與 API 資料獲取
@@ -154,6 +155,27 @@ def get_abuse_ch_data(ip):
         
     return f"\n    [ThreatFox IOC 庫]: {tf_result_text}\n    [URLhaus 惡意主機庫]: {urlhaus_result_text}\n    "
 
+def check_firehol_l3(ip: str) -> str:
+    """新增：動態下載 FireHOL Level 3 清單並比對 IP"""
+    url = "https://iplists.firehol.org/files/firehol_level3.netset"
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = resp.read().decode('utf-8')
+        target = ipaddress.ip_address(ip)
+        
+        for line in data.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            network = ipaddress.ip_network(line, strict=False)
+            if target in network:
+                return f"🚨 命中！此 IP 被列入 FireHOL Level 3 黑名單 (匹配網段: {line})"
+                
+        return "✅ 無命中紀錄 (不在 FireHOL Level 3 中)"
+    except Exception as e:
+        return f"⚠️ FireHOL 查詢異常 ({e})"
+
 # ==========================================
 # 智慧引擎與排版模組
 # ==========================================
@@ -168,7 +190,6 @@ def analyze_with_gemini(combined_data):
         
     api_key = api_key.strip()
 
-    # 1. 恢復動態詢問，確切知道這把金鑰能用什麼模型
     list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
         req_list = urllib.request.Request(list_url)
@@ -185,7 +206,6 @@ def analyze_with_gemini(combined_data):
         print(f"❌ 獲取模型清單失敗: {e}")
         sys.exit(1)
 
-    # 2. 智慧排序：把已知效能最好的排前面，其他的當備胎
     preferred = [
         "models/gemini-2.5-flash", 
         "models/gemini-2.0-flash", 
@@ -195,13 +215,9 @@ def analyze_with_gemini(combined_data):
     ]
     
     prioritized_models = [m for m in preferred if m in available_models]
-    # 如果偏好清單全滅，就把所有可用清單加進來闖關
     for m in available_models:
         if m not in prioritized_models:
             prioritized_models.append(m)
-
-    tw_tz = timezone(timedelta(hours=8))
-    current_time = datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')
 
     prompt = f"""
     你是一位頂級資安威脅情資 (CTI) 分析師。請根據以下多源情資數據，產出繁體中文的專業資安分析報告。
@@ -218,7 +234,7 @@ def analyze_with_gemini(combined_data):
 
     一、 綜合威脅概述
     二、 VirusTotal 分析與偵測時間軸
-    三、 Abuse.ch (白名單、ThreatFox 與 URLhaus) 交叉比對
+    三、 外部威脅情資 (Abuse.ch 與 FireHOL) 交叉比對
     四、 專家結論
     五、 建議防護行動
     """
@@ -226,12 +242,10 @@ def analyze_with_gemini(combined_data):
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     data = json.dumps(payload).encode('utf-8')
 
-    # 3. 依序闖關，只要成功一個就立刻完成，不會暴衝
     for model_name in prioritized_models:
         print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
         
-        # 絕對乾淨的網址，沒有 Markdown 干擾
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
+        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
         req.add_header('Content-Type', 'application/json')
@@ -320,7 +334,7 @@ def upload_to_drive(filename):
     creds = Credentials(
         token=None,
         refresh_token=refresh_token.strip(),
-        token_uri="https://oauth2.googleapis.com/token",
+        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
         client_id=client_id.strip(),
         client_secret=client_secret.strip()
     )
@@ -330,10 +344,14 @@ def upload_to_drive(filename):
     file_metadata = {'name': filename, 'parents': [folder_id.strip()]}
     media = MediaFileUpload(filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     
-    file = service.files().create(
-        body=file_metadata, media_body=media, fields='id', supportsAllDrives=True
-    ).execute()
-    print(f"✅ 完美登頂！報告已成功存入您的 Google Drive，檔案 ID: {file.get('id')}")
+    try:
+        file = service.files().create(
+            body=file_metadata, media_body=media, fields='id', supportsAllDrives=True
+        ).execute()
+        print(f"✅ 完美登頂！報告已成功存入您的 Google Drive，檔案 ID: {file.get('id')}")
+    except RefreshError as e:
+        print(f"❌ 錯誤：Google Drive 授權已失效 ({e})。請重新發行 Refresh Token 並更新至環境變數中。")
+        sys.exit(1)
 
 # ==========================================
 # 主程式執行區塊
@@ -349,13 +367,17 @@ if __name__ == "__main__":
     if not validate_ip(target_ip):
         sys.exit(1)
     
-    print("⚡ 🔍 [1/4] 啟動 3X 引擎：正在並行獲取 VT 與 Abuse.ch 雙核心情資...")
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_vt    = ex.submit(get_vt_data, target_ip)
-        f_fp    = ex.submit(check_false_positive, target_ip)
-        f_abuse = ex.submit(get_abuse_ch_data, target_ip)
+    print("⚡ 🔍 [1/4] 啟動 4X 引擎：正在並行獲取 VT、Abuse.ch 與 FireHOL 情資...")
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_vt      = ex.submit(get_vt_data, target_ip)
+        f_fp      = ex.submit(check_false_positive, target_ip)
+        f_abuse   = ex.submit(get_abuse_ch_data, target_ip)
+        f_firehol = ex.submit(check_firehol_l3, target_ip)
         
-    vt_info, fp_info, abuse_info = f_vt.result(), f_fp.result(), f_abuse.result()
+    vt_info = f_vt.result()
+    fp_info = f_fp.result()
+    abuse_info = f_abuse.result()
+    firehol_info = f_firehol.result()
     
     combined_intel = f"""
     --- VirusTotal 數據 ---
@@ -366,6 +388,9 @@ if __name__ == "__main__":
     
     --- Abuse.ch (ThreatFox + URLhaus) 惡意數據 ---
     {abuse_info}
+
+    --- FireHOL Level 3 黑名單比對 ---
+    狀態: {firehol_info}
     """
     
     report_text = analyze_with_gemini(combined_intel)
