@@ -176,6 +176,68 @@ def check_firehol_l3(ip: str) -> str:
     except Exception as e:
         return f"⚠️ FireHOL 查詢異常 ({e})"
 
+def get_abuseipdb_data(ip: str) -> str:
+    """
+    獲取 AbuseIPDB 濫用情資 (使用 Free API Key)
+    功能：取得該 IP 的濫用信心指數、總回報次數、ISP 資訊與最近回報日期。
+    """
+    api_key = os.environ.get('ABUSEIPDB_API_KEY')
+    if not api_key:
+        return "⚠️ 未設定 ABUSEIPDB_API_KEY，跳過 AbuseIPDB 查詢。"
+
+    # API 參數設定
+    url = 'https://api.abuseipdb.com/api/v2/check'
+    querystring = {
+        'ipAddress': ip,
+        'maxAgeInDays': '90',  # 查詢最近 90 天內的回報
+        'verbose': 'true'
+    }
+    
+    headers = {
+        'Accept': 'application/json',
+        'Key': api_key.strip()
+    }
+
+    try:
+        # 使用標準庫 urllib 進行請求，保持與你原始程式碼一致的風格
+        full_url = f"{url}?{urllib.parse.urlencode(querystring)}"
+        req = urllib.request.Request(full_url, headers=headers)
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            res_data = json.loads(response.read())
+            data = res_data.get('data', {})
+            
+            # 提取關鍵欄位
+            score = data.get('abuseConfidenceScore', 0)
+            total_reports = data.get('totalReports', 0)
+            usage_type = data.get('usageType', 'Unknown')
+            isp = data.get('isp', 'Unknown')
+            domain = data.get('domain', 'Unknown')
+            last_reported = data.get('lastReportedAt', 'N/A')
+
+            # 根據分數給予視覺化標記
+            if score >= 75:
+                status_icon = "🚨 [極高風險]"
+            elif score >= 25:
+                status_icon = "⚠️ [可疑活動]"
+            else:
+                status_icon = "✅ [信譽良好]"
+
+            return f"""
+        狀態: {status_icon}
+        濫用信心指數: {score}%
+        最近 90 天回報總數: {total_reports} 次
+        最後回報時間: {last_reported}
+        ISP/組織: {isp} ({domain})
+        使用類型: {usage_type}
+            """
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return "⚠️ AbuseIPDB 查詢失敗: 已達到每日 API 配額上限 (Rate Limit)。"
+        return f"⚠️ AbuseIPDB 查詢失敗 (HTTP {e.code})"
+    except Exception as e:
+        return f"⚠️ AbuseIPDB 查詢異常 ({e})"
+
 # ==========================================
 # 智慧引擎與排版模組
 # ==========================================
@@ -367,21 +429,29 @@ if __name__ == "__main__":
     if not validate_ip(target_ip):
         sys.exit(1)
     
-    print("⚡ 🔍 [1/4] 啟動 4X 引擎：正在並行獲取 VT、Abuse.ch 與 FireHOL 情資...")
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    # 修改原本的併行執行部分
+    print("⚡ 🔍 [1/4] 啟動 5X 引擎：正在並行獲取 VT、Abuse.ch、FireHOL 與 AbuseIPDB 情資...")
+    with ThreadPoolExecutor(max_workers=5) as ex:
         f_vt      = ex.submit(get_vt_data, target_ip)
         f_fp      = ex.submit(check_false_positive, target_ip)
         f_abuse   = ex.submit(get_abuse_ch_data, target_ip)
         f_firehol = ex.submit(check_firehol_l3, target_ip)
+        f_abuseipdb = ex.submit(get_abuseipdb_data, target_ip) # <--- 新增這行
         
-    vt_info = f_vt.result()
-    fp_info = f_fp.result()
-    abuse_info = f_abuse.result()
+    # 獲取所有結果
+    vt_info      = f_vt.result()
+    fp_info      = f_fp.result()
+    abuse_info   = f_abuse.result()
     firehol_info = f_firehol.result()
+    abuseipdb_info = f_abuseipdb.result() # <--- 新增這行
     
+    # 將數據餵入 combined_intel 變數
     combined_intel = f"""
     --- VirusTotal 數據 ---
     {vt_info}
+    
+    --- AbuseIPDB 社群回報數據 ---
+    {abuseipdb_info}
     
     --- Abuse.ch 誤報白名單 (False Positive) 檢查 ---
     狀態: {fp_info}
