@@ -32,8 +32,8 @@ jobs:
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
-          # 👇 補上 Abuse.ch 的金鑰
           THREATFOX_API_KEY: ${{ secrets.THREATFOX_API_KEY }}
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
           
         run: |
           python auto_analyst.py ${{ github.event.inputs.target_ip }}
