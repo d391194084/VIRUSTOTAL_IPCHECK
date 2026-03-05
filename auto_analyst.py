@@ -63,18 +63,18 @@ def get_vt_data(ip):
     except Exception as e:
         return f"狀態: VT 查詢失敗或無回應 ({e})"
 
-def check_false_positive(ip):
+def check_hunting_abusech(ip: str) -> str:
     """
-    改用 ThreatFox search_ioc 查詢來判斷是否為誤報。
-    原 hunting-api.abuse.ch get_fplist 需要研究員等級金鑰，一般免費 ThreatFox
-    金鑰無此權限，改以 ThreatFox 直接查詢結果作為誤報參考。
+    查詢 hunting.abuse.ch 官方誤報白名單 (False Positive List)。
+    使用與 ThreatFox 相同的 Auth-Key（auth.abuse.ch 全平台通用）。
+    環境變數：THREATFOX_API_KEY
     """
     tf_key = os.environ.get('THREATFOX_API_KEY')
     if not tf_key:
-        return "⚠️ 未設定 THREATFOX_API_KEY，跳過誤報白名單檢查"
+        return "⚠️ 未設定 THREATFOX_API_KEY，跳過 hunting.abuse.ch 誤報白名單比對"
 
-    url = "https://threatfox-api.abuse.ch/api/v1/"
-    payload = {"query": "search_ioc", "search_term": ip}
+    url = "https://hunting-api.abuse.ch/api/v1/"
+    payload = {"query": "get_fplist", "format": "json"}
     data = json.dumps(payload).encode('utf-8')
 
     req = urllib.request.Request(url, data=data)
@@ -82,22 +82,31 @@ def check_false_positive(ip):
     req.add_header('Auth-Key', tf_key.strip())
 
     try:
-        resp = urllib.request.urlopen(req, timeout=15)
-        res = json.loads(resp.read())
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res = json.loads(resp.read())
 
         status = res.get('query_status')
-        if status == 'no_result':
-            return "✅ ThreatFox 查無此 IP 之威脅紀錄，誤報風險較低"
-        elif status == 'ok':
-            findings = res.get('data', [])
-            low_confidence = all(d.get('confidence_level', 100) < 30 for d in findings)
-            if low_confidence:
-                return f"⚠️ 存在低置信度 ({len(findings)} 筆) 紀錄，可能為誤報，建議人工複查"
-            return f"🔍 ThreatFox 查詢成功，命中 {len(findings)} 筆紀錄 (非誤報白名單)"
+
+        if status == 'unknown_auth_key':
+            return "❌ Auth-Key 無效，請至 auth.abuse.ch 重新確認金鑰"
+
+        if status != 'ok':
+            return f"⚠️ hunting.abuse.ch 回應異常 (query_status: {status})"
+
+        fp_list = res.get('data', [])
+        if not fp_list:
+            return "⚠️ 誤報白名單資料為空，無法比對"
+
+        if ip_in_fplist(ip, fp_list):
+            return (
+                f"✅ 【官方確認誤報】此 IP ({ip}) 已被 abuse.ch 官方列入 False Positive 白名單！"
+                f" 建議大幅降低風險評級，本次情資命中可能為誤報。"
+            )
         else:
-            return f"⚠️ ThreatFox 回應狀態異常: {status}"
+            return f"✅ 不在 abuse.ch 官方誤報白名單中（白名單共 {len(fp_list)} 筆紀錄已比對）"
+
     except Exception as e:
-        return f"⚠️ 誤報白名單查詢異常 ({e})"
+        return f"⚠️ hunting.abuse.ch 查詢異常 ({e})"
 
 def get_abuse_ch_data(ip):
     tf_key = os.environ.get('THREATFOX_API_KEY')
@@ -721,7 +730,7 @@ if __name__ == "__main__":
     print("⚡ 🔍 [1/4] 啟動 6X 引擎：正在並行獲取 VT、Abuse.ch、FireHOL、AbuseIPDB 與 Shodan 情資...")
     with ThreadPoolExecutor(max_workers=6) as ex:
         f_vt        = ex.submit(get_vt_data, target_ip)
-        f_fp        = ex.submit(check_false_positive, target_ip)
+        f_fp        = ex.submit(check_hunting_abusech, target_ip)
         f_abuse     = ex.submit(get_abuse_ch_data, target_ip)
         f_firehol   = ex.submit(check_firehol_l3, target_ip)
         f_abuseipdb = ex.submit(get_abuseipdb_data, target_ip)
@@ -743,7 +752,7 @@ if __name__ == "__main__":
     --- AbuseIPDB 社群回報數據 ---
     {abuseipdb_info}
     
-    --- Abuse.ch 誤報白名單 (False Positive) 檢查 ---
+    --- Abuse.ch 官方誤報白名單 hunting.abuse.ch (False Positive) 檢查 ---
     狀態: {fp_info}
     
     --- Abuse.ch (ThreatFox + URLhaus) 惡意數據 ---
