@@ -95,9 +95,20 @@ def get_abuse_ch_data(ip):
     tf_result_text = "ℹ️ 未設定 ThreatFox 金鑰，跳過家族比對"
     urlhaus_result_text = "✅ 查無惡意載體分發紀錄"
     
+    # --- 1. ThreatFox 查詢 ---
     if tf_key:
         try:
-            # ... (中間 API 呼叫邏輯保持不變) ...
+            url_tf = "https://threatfox-api.abuse.ch/api/v1/"
+            payload_tf = {"query": "search_ioc", "search_term": ip}
+            data_tf = json.dumps(payload_tf).encode('utf-8')
+            
+            req_tf = urllib.request.Request(url_tf, data=data_tf)
+            req_tf.add_header('Content-Type', 'application/json')
+            req_tf.add_header('Auth-Key', tf_key.strip())
+            req_tf.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+            
+            with urllib.request.urlopen(req_tf, timeout=15) as resp_tf:
+                res_tf = json.loads(resp_tf.read())
             
             if res_tf.get('query_status') == 'ok':
                 findings = []
@@ -107,26 +118,37 @@ def get_abuse_ch_data(ip):
                     findings.append(f"● 命中家族: {malware} (置信度: {confidence}%)")
                 tf_result_text = "🔍 偵測到明確威脅關聯：\n      " + "\n      ".join(set(findings))
             elif res_tf.get('query_status') == 'no_result':
-                # 這裡改為中性陳述
-                tf_result_text = "✅ 目前在 ThreatFox 數據庫中查無匹配的惡意標籤。"
+                tf_result_text = "✅ ThreatFox 數據庫中查無匹配紀錄。"
             else:
                 tf_result_text = f"⚠️ 查詢狀態：{res_tf.get('query_status')}"
         except Exception as e:
-            tf_result_text = f"⚠️ 查詢中斷 ({e})"
+            tf_result_text = f"⚠️ ThreatFox 查詢中斷 ({str(e)})"
 
+    # --- 2. URLhaus 查詢 ---
     try:
-        # ... (URLhaus 呼叫邏輯) ...
+        url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
+        data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
+        req_uh = urllib.request.Request(url_uh, data=data_uh)
+        req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+        
+        # 修正點：確保 res_uh 在 try 區塊內正確賦值，避免 NameError
+        with urllib.request.urlopen(req_uh, timeout=15) as resp_uh:
+            res_uh = json.loads(resp_uh.read())
+        
         if res_uh.get('query_status') == 'ok':
             urlhaus_result_text = f"⚠️ 發現 {len(res_uh.get('urls', []))} 筆惡意網址關聯紀錄。"
         else:
             urlhaus_result_text = "✅ URLhaus 查無此主機之惡意活動紀錄。"
+            
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            urlhaus_result_text = "💡 URLhaus 提示：API 金鑰無效或權限受限，無法獲取詳細數據。"
+            urlhaus_result_text = "💡 URLhaus 提示：API 金鑰無效或權限受限。"
         else:
             urlhaus_result_text = f"💡 URLhaus 查詢受限 (HTTP {e.code})"
-            
-    return f"\n    [Abuse.ch 情資比對]: {tf_result_text}\n    [URLhaus 行為紀錄]: {urlhaus_result_text}\n    "
+    except Exception as e:
+        urlhaus_result_text = f"⚠️ URLhaus 數據分析異常 ({str(e)})"
+        
+    return f"\n    [ThreatFox 情資]: {tf_result_text}\n    [URLhaus 行為紀錄]: {urlhaus_result_text}\n    "
     
 def check_firehol_l3(ip: str) -> str:
     """新增：動態下載 FireHOL Level 3 清單並比對 IP"""
