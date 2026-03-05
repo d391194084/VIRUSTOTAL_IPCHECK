@@ -180,6 +180,70 @@ def check_firehol_l3(ip: str) -> str:
     except Exception as e:
         return f"⚠️ FireHOL 查詢異常 ({e})"
 
+def get_shodan_internetdb(ip: str) -> str:
+    """
+    查詢 Shodan InternetDB — 無需 API Key，完全免費。
+    回傳：開放端口、已知漏洞 (CVEs)、惡意標籤、主機名稱。
+    端點：https://internetdb.shodan.io/{ip}
+    """
+    url = f"https://internetdb.shodan.io/{ip}"
+    try:
+        req = urllib.request.Request(url)
+        req.add_header('Accept', 'application/json')
+        req.add_header('User-Agent', 'curl/8.0')
+
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+
+        # ── 開放端口 ────────────────────────────────────────────────────────
+        ports = data.get('ports', [])
+        if ports:
+            ports_str = ", ".join(str(p) for p in sorted(ports))
+        else:
+            ports_str = "查無開放端口紀錄"
+
+        # ── CVE 漏洞 ─────────────────────────────────────────────────────────
+        vulns = data.get('vulns', [])
+        if vulns:
+            # 最多顯示 10 筆，避免過長
+            shown = sorted(vulns)[:10]
+            suffix = f" … 等共 {len(vulns)} 筆" if len(vulns) > 10 else ""
+            vulns_str = f"⚠️ {', '.join(shown)}{suffix}"
+        else:
+            vulns_str = "✅ 查無已知 CVE 漏洞"
+
+        # ── 惡意標籤 (honeypot / scanner / tor 等) ───────────────────────────
+        tags = data.get('tags', [])
+        tags_str = ", ".join(tags) if tags else "無"
+
+        # ── 主機名稱 ─────────────────────────────────────────────────────────
+        hostnames = data.get('hostnames', [])
+        hostnames_str = ", ".join(hostnames) if hostnames else "無反解紀錄"
+
+        # ── 風險摘要標記 ──────────────────────────────────────────────────────
+        if vulns:
+            risk_icon = "🚨 [發現已知漏洞]"
+        elif tags:
+            risk_icon = "⚠️ [標籤異常]"
+        else:
+            risk_icon = "✅ [無明顯攻擊面警示]"
+
+        return f"""
+        狀態: {risk_icon}
+        開放端口: {ports_str}
+        已知 CVE: {vulns_str}
+        惡意標籤: {tags_str}
+        主機名稱: {hostnames_str}
+        """
+
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return "✅ Shodan InternetDB 查無此 IP 的掃描紀錄 (可能為低活躍主機)"
+        return f"⚠️ Shodan InternetDB 查詢失敗 (HTTP {e.code})"
+    except Exception as e:
+        return f"⚠️ Shodan InternetDB 查詢異常 ({e})"
+
+
 def get_abuseipdb_data(ip: str) -> str:
     """
     獲取 AbuseIPDB 濫用情資 (使用 Free API Key)
@@ -654,21 +718,22 @@ if __name__ == "__main__":
     if not validate_ip(target_ip):
         sys.exit(1)
     
-    # 修改原本的併行執行部分
-    print("⚡ 🔍 [1/4] 啟動 5X 引擎：正在並行獲取 VT、Abuse.ch、FireHOL 與 AbuseIPDB 情資...")
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        f_vt      = ex.submit(get_vt_data, target_ip)
-        f_fp      = ex.submit(check_false_positive, target_ip)
-        f_abuse   = ex.submit(get_abuse_ch_data, target_ip)
-        f_firehol = ex.submit(check_firehol_l3, target_ip)
-        f_abuseipdb = ex.submit(get_abuseipdb_data, target_ip) # <--- 新增這行
-        
+    print("⚡ 🔍 [1/4] 啟動 6X 引擎：正在並行獲取 VT、Abuse.ch、FireHOL、AbuseIPDB 與 Shodan 情資...")
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        f_vt        = ex.submit(get_vt_data, target_ip)
+        f_fp        = ex.submit(check_false_positive, target_ip)
+        f_abuse     = ex.submit(get_abuse_ch_data, target_ip)
+        f_firehol   = ex.submit(check_firehol_l3, target_ip)
+        f_abuseipdb = ex.submit(get_abuseipdb_data, target_ip)
+        f_shodan    = ex.submit(get_shodan_internetdb, target_ip)
+
     # 獲取所有結果
-    vt_info      = f_vt.result()
-    fp_info      = f_fp.result()
-    abuse_info   = f_abuse.result()
-    firehol_info = f_firehol.result()
-    abuseipdb_info = f_abuseipdb.result() # <--- 新增這行
+    vt_info        = f_vt.result()
+    fp_info        = f_fp.result()
+    abuse_info     = f_abuse.result()
+    firehol_info   = f_firehol.result()
+    abuseipdb_info = f_abuseipdb.result()
+    shodan_info    = f_shodan.result()
     
     # 將數據餵入 combined_intel 變數
     combined_intel = f"""
@@ -686,6 +751,9 @@ if __name__ == "__main__":
 
     --- FireHOL Level 3 黑名單比對 ---
     狀態: {firehol_info}
+
+    --- Shodan InternetDB 攻擊面數據 (開放端口 / CVE / 標籤) ---
+    {shodan_info}
     """
     
     report_text = analyze_with_gemini(combined_intel)
