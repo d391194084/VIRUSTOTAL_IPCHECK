@@ -8,8 +8,10 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -334,42 +336,260 @@ def extract_risk_level(content: str) -> str:
 
 def create_word_document(ip, content):
     print("📝 [3/4] 正在生成企業級 Word (.docx) 報告...")
+
+    # ── 顏色常數 ────────────────────────────────────────────────────────────────
+    C_NAVY       = '1F3864'   # 深藍：標題列、標籤色
+    C_MID_BLUE   = '2E75B6'   # 中藍：次要標題
+    C_LABEL_BG   = 'D6E4F0'   # 淡藍：Label 欄背景
+    C_DIVIDER    = 'BDD7EE'   # 淡藍灰：水平分隔線
+    C_TEXT_DARK  = '1A1A2E'   # 深字色
+    C_TEXT_LIGHT = 'FFFFFF'   # 白字
+    C_RISK = {
+        'High':    ('C00000', C_TEXT_LIGHT),  # 深紅
+        'Medium':  ('E36C09', C_TEXT_LIGHT),  # 橘
+        'Low':     ('375623', C_TEXT_LIGHT),  # 深綠
+        'Unknown': ('595959', C_TEXT_LIGHT),  # 灰
+    }
+
+    # ── XML Helper：設定儲存格背景色 ─────────────────────────────────────────
+    def _set_cell_bg(cell, hex_color):
+        tcPr = cell._tc.get_or_add_tcPr()
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'),   'clear')
+        shd.set(qn('w:color'), 'auto')
+        shd.set(qn('w:fill'),  hex_color)
+        tcPr.append(shd)
+
+    # ── XML Helper：設定段落背景色 ───────────────────────────────────────────
+    def _set_para_bg(para, hex_color):
+        pPr = para._p.get_or_add_pPr()
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'),   'clear')
+        shd.set(qn('w:color'), 'auto')
+        shd.set(qn('w:fill'),  hex_color)
+        pPr.append(shd)
+
+    # ── XML Helper：加入段落左側色條 ─────────────────────────────────────────
+    def _set_left_border(para, color, sz='20', space='6'):
+        pPr = para._p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        left = OxmlElement('w:left')
+        left.set(qn('w:val'),   'single')
+        left.set(qn('w:sz'),    sz)
+        left.set(qn('w:space'), space)
+        left.set(qn('w:color'), color)
+        pBdr.append(left)
+        pPr.append(pBdr)
+
+    # ── XML Helper：加入段落下底線（水平分隔） ───────────────────────────────
+    def _set_bottom_border(para, color, sz='6'):
+        pPr = para._p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        bot = OxmlElement('w:bottom')
+        bot.set(qn('w:val'),   'single')
+        bot.set(qn('w:sz'),    sz)
+        bot.set(qn('w:space'), '1')
+        bot.set(qn('w:color'), color)
+        pBdr.append(bot)
+        pPr.append(pBdr)
+
+    # ── Helper：加入章節標題段落 ─────────────────────────────────────────────
+    def _add_section_heading(doc, text):
+        para = doc.add_paragraph()
+        para.paragraph_format.space_before = Pt(16)
+        para.paragraph_format.space_after  = Pt(4)
+        para.paragraph_format.left_indent  = Pt(10)
+        _set_left_border(para, C_NAVY, sz='28', space='8')
+        run = para.add_run(text)
+        run.bold = True
+        run.font.size = Pt(13)
+        run.font.name = 'Microsoft JhengHei'
+        run.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
+        return para
+
+    # ── Helper：加入一般內文段落 ─────────────────────────────────────────────
+    def _add_body_para(doc, text):
+        para = doc.add_paragraph()
+        para.paragraph_format.left_indent  = Pt(18)
+        para.paragraph_format.space_before = Pt(2)
+        para.paragraph_format.space_after  = Pt(2)
+        run = para.add_run(text)
+        run.font.size = Pt(10.5)
+        run.font.name = 'Microsoft JhengHei'
+        run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
+        return para
+
+    # ── 建立 Document ────────────────────────────────────────────────────────
     doc = Document()
-    
-    title = doc.add_heading('資安威脅深度分析報告', 0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    tw_tz = timezone(timedelta(hours=8))
-    table = doc.add_table(rows=3, cols=2)
-    table.style = 'Table Grid'
-    meta = [
-        ('評估對象', ip),
-        ('產出時間', datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S') + ' (台灣標準時間)'),
-        ('風險等級', extract_risk_level(content)),
+    sec = doc.sections[0]
+    sec.top_margin    = Inches(1.0)
+    sec.bottom_margin = Inches(1.0)
+    sec.left_margin   = Inches(1.2)
+    sec.right_margin  = Inches(1.2)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 區塊 1：深藍標題橫幅
+    # ─────────────────────────────────────────────────────────────────────────
+    p_title = doc.add_paragraph()
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_title.paragraph_format.space_before = Pt(0)
+    p_title.paragraph_format.space_after  = Pt(0)
+    _set_para_bg(p_title, C_NAVY)
+    r = p_title.add_run('  資安威脅深度分析報告  ')
+    r.bold = True
+    r.font.size = Pt(22)
+    r.font.name = 'Microsoft JhengHei'
+    r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+    p_sub = doc.add_paragraph()
+    p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_sub.paragraph_format.space_before = Pt(0)
+    p_sub.paragraph_format.space_after  = Pt(14)
+    _set_para_bg(p_sub, C_NAVY)
+    r2 = p_sub.add_run('Cybersecurity Threat Intelligence Report')
+    r2.font.size = Pt(11)
+    r2.font.name = 'Arial'
+    r2.font.color.rgb = RGBColor(0xBF, 0xD7, 0xED)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 區塊 2：元資料彙整表格
+    # ─────────────────────────────────────────────────────────────────────────
+    tw_tz      = timezone(timedelta(hours=8))
+    risk_level = extract_risk_level(content)
+    risk_bg, risk_fg = C_RISK.get(risk_level, C_RISK['Unknown'])
+
+    tbl = doc.add_table(rows=4, cols=2)
+    tbl.style = 'Table Grid'
+
+    # ── 表格欄寬（DXA，約 8.76 cm + 9 cm） ─────────────────────────────────
+    # 頁面可用寬度 ≈ 8.5" – 2.4" = 6.1" = 8784 DXA；各欄 3888 / 4896
+    col_widths = [3888, 4896]
+    for i, row in enumerate(tbl.rows):
+        for j, cell in enumerate(row.cells):
+            tc = cell._tc
+            tcPr = tc.get_or_add_tcPr()
+            tcW = OxmlElement('w:tcW')
+            tcW.set(qn('w:w'),    str(col_widths[j]))
+            tcW.set(qn('w:type'), 'dxa')
+            tcPr.append(tcW)
+
+    # ── Row 0：標頭列（合併儲存格） ──────────────────────────────────────────
+    hdr = tbl.rows[0]
+    hdr.cells[0].merge(hdr.cells[1])
+    _set_cell_bg(hdr.cells[0], C_NAVY)
+    hp = hdr.cells[0].paragraphs[0]
+    hp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    hp.paragraph_format.space_before = Pt(5)
+    hp.paragraph_format.space_after  = Pt(5)
+    hr_ = hp.add_run('▌ 報告基本資訊  /  Report Metadata')
+    hr_.bold = True
+    hr_.font.size = Pt(11.5)
+    hr_.font.name = 'Microsoft JhengHei'
+    hr_.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+    # ── Rows 1-3：資料列 ─────────────────────────────────────────────────────
+    meta_rows = [
+        ('評估目標  Target IP',     ip),
+        ('報告產出時間  Generated', datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S') + '（台灣標準時間 UTC+8）'),
+        ('綜合風險等級  Risk Level', f'  ●  {risk_level.upper()}  '),
     ]
-    for i, (label, value) in enumerate(meta):
-        table.rows[i].cells[0].text = label
-        table.rows[i].cells[1].text = value
-        
-    doc.add_paragraph()
-    
+    for i, (label, value) in enumerate(meta_rows):
+        row   = tbl.rows[i + 1]
+        lcell = row.cells[0]
+        vcell = row.cells[1]
+
+        # Label 欄
+        _set_cell_bg(lcell, C_LABEL_BG)
+        lp = lcell.paragraphs[0]
+        lp.paragraph_format.space_before = Pt(5)
+        lp.paragraph_format.space_after  = Pt(5)
+        lr = lp.add_run(label)
+        lr.bold = True
+        lr.font.size = Pt(10)
+        lr.font.name = 'Microsoft JhengHei'
+        lr.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
+
+        # Value 欄
+        vp = vcell.paragraphs[0]
+        vp.paragraph_format.space_before = Pt(5)
+        vp.paragraph_format.space_after  = Pt(5)
+        if i == 2:  # 風險等級：加底色
+            _set_cell_bg(vcell, risk_bg)
+            vp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            vr = vp.add_run(value)
+            vr.bold = True
+            vr.font.size = Pt(11)
+            vr.font.name = 'Microsoft JhengHei'
+            fg_r, fg_g, fg_b = (int(risk_fg[j:j+2], 16) for j in (0, 2, 4))
+            vr.font.color.rgb = RGBColor(fg_r, fg_g, fg_b)
+        else:
+            _set_cell_bg(vcell, 'FFFFFF')
+            vr = vp.add_run(value)
+            vr.font.size = Pt(10)
+            vr.font.name = 'Microsoft JhengHei'
+            vr.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
+
+    doc.add_paragraph()   # 表格後留白
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 區塊 3：AI 分析正文
+    # ─────────────────────────────────────────────────────────────────────────
     section_markers = ('執行摘要', '一、', '二、', '三、', '四、', '五、', '六、')
+    bullet_prefixes = ('●', '·', '-', '*', '•', '○', '▶', '→')
+
     for line in content.split('\n'):
         stripped = line.strip()
         if not stripped:
-            doc.add_paragraph()
             continue
-        
+
         is_heading = False
         for m in section_markers:
             if stripped.startswith(m):
-                doc.add_heading(stripped, level=1)
+                _add_section_heading(doc, stripped)
                 is_heading = True
                 break
-                
+
         if not is_heading:
-            doc.add_paragraph(stripped)
-            
+            if any(stripped.startswith(pfx) for pfx in bullet_prefixes):
+                body = stripped[1:].strip()
+                para = doc.add_paragraph()
+                para.paragraph_format.left_indent  = Pt(28)
+                para.paragraph_format.first_line_indent = Pt(-14)
+                para.paragraph_format.space_before = Pt(2)
+                para.paragraph_format.space_after  = Pt(2)
+                bullet_run = para.add_run('▸  ')
+                bullet_run.bold = True
+                bullet_run.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
+                bullet_run.font.size = Pt(10.5)
+                text_run = para.add_run(body)
+                text_run.font.size = Pt(10.5)
+                text_run.font.name = 'Microsoft JhengHei'
+                text_run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
+            else:
+                _add_body_para(doc, stripped)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 區塊 4：頁腳資訊列
+    # ─────────────────────────────────────────────────────────────────────────
+    p_div = doc.add_paragraph()
+    p_div.paragraph_format.space_before = Pt(18)
+    p_div.paragraph_format.space_after  = Pt(4)
+    _set_bottom_border(p_div, C_NAVY, sz='12')
+
+    p_foot = doc.add_paragraph()
+    p_foot.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_foot.paragraph_format.space_before = Pt(2)
+    p_foot.paragraph_format.space_after  = Pt(0)
+    fr = p_foot.add_run(
+        f'本報告屬機密文件，僅供授權人員閱覽  ·  '
+        f'Auto Analyst v1.0  ·  '
+        f'Generated: {datetime.now(tw_tz).strftime("%Y-%m-%d")}'
+    )
+    fr.italic = True
+    fr.font.size = Pt(8.5)
+    fr.font.name = 'Arial'
+    fr.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+
     filename = f"Security_Report_{ip.replace('.', '_')}.docx"
     doc.save(filename)
     return filename
