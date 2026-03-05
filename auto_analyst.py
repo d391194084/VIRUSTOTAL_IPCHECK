@@ -245,7 +245,7 @@ def analyze_with_gemini(combined_data):
     for model_name in prioritized_models:
         print(f"   ⏳ 嘗試呼叫最佳模型: {model_name} ...")
         
-        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
         
         req = urllib.request.Request(url, data=data)
         req.add_header('Content-Type', 'application/json')
@@ -334,7 +334,7 @@ def upload_to_drive(filename):
     creds = Credentials(
         token=None,
         refresh_token=refresh_token.strip(),
-        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
+        token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id.strip(),
         client_secret=client_secret.strip()
     )
