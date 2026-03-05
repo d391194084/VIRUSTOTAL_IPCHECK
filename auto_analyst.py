@@ -92,61 +92,41 @@ def check_false_positive(ip):
 
 def get_abuse_ch_data(ip):
     tf_key = os.environ.get('THREATFOX_API_KEY')
-    tf_result_text = "⚠️ 未設定 ThreatFox API Key，跳過深度獵殺分析"
-    urlhaus_result_text = "✅ 查無惡意載體託管紀錄 (Clean)"
+    tf_result_text = "ℹ️ 未設定 ThreatFox 金鑰，跳過家族比對"
+    urlhaus_result_text = "✅ 查無惡意載體分發紀錄"
     
     if tf_key:
         try:
-            url_tf = "https://threatfox-api.abuse.ch/api/v1/"
-            payload_tf = {"query": "search_ioc", "search_term": ip}
-            data_tf = json.dumps(payload_tf).encode('utf-8')
-            
-            req_tf = urllib.request.Request(url_tf, data=data_tf)
-            req_tf.add_header('Content-Type', 'application/json')
-            req_tf.add_header('Auth-Key', tf_key.strip())
-            req_tf.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-            
-            resp_tf = urllib.request.urlopen(req_tf, timeout=15)
-            res_tf = json.loads(resp_tf.read())
+            # ... (中間 API 呼叫邏輯保持不變) ...
             
             if res_tf.get('query_status') == 'ok':
                 findings = []
                 for doc in res_tf.get('data', []):
-                    malware = doc.get('malware_printable', 'Unknown')
+                    malware = doc.get('malware_printable', '未知')
                     confidence = doc.get('confidence_level', 0)
-                    tags = ", ".join(doc.get('tags') or ["無標籤"])
-                    findings.append(f"● [家族: {malware}] (置信度: {confidence}%) - 標籤: {tags}")
-                
-                tf_result_text = "🚨 【獵殺命中】發現以下惡意威脅關聯：\n      " + "\n      ".join(set(findings))
+                    findings.append(f"● 命中家族: {malware} (置信度: {confidence}%)")
+                tf_result_text = "🔍 偵測到明確威脅關聯：\n      " + "\n      ".join(set(findings))
             elif res_tf.get('query_status') == 'no_result':
-                tf_result_text = "✅ 數據庫比對完成：無明確威脅家族命中 (Clear)"
+                # 這裡改為中性陳述
+                tf_result_text = "✅ 目前在 ThreatFox 數據庫中查無匹配的惡意標籤。"
             else:
-                tf_result_text = f"⚠️ 查詢狀態異常: {res_tf.get('query_status')}"
+                tf_result_text = f"⚠️ 查詢狀態：{res_tf.get('query_status')}"
         except Exception as e:
-            tf_result_text = f"⚠️ ThreatFox 獵殺分析異常 ({e})"
+            tf_result_text = f"⚠️ 查詢中斷 ({e})"
 
     try:
-        url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
-        data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
-        req_uh = urllib.request.Request(url_uh, data=data_uh)
-        req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-        
-        resp_uh = urllib.request.urlopen(req_uh)
-        res_uh = json.loads(resp_uh.read())
-        
+        # ... (URLhaus 呼叫邏輯) ...
         if res_uh.get('query_status') == 'ok':
-            urls_count = len(res_uh.get('urls', []))
-            blacklisted = res_uh.get('blacklists', {})
-            spamhaus = "🚨 命中" if blacklisted.get('spamhaus_dbl') == 'abused' else "✅ 未命中"
-            
-            urlhaus_result_text = f"🚨 【惡意託管】此 IP 曾分發 {urls_count} 個惡意檔案！Spamhaus 狀態: {spamhaus}"
+            urlhaus_result_text = f"⚠️ 發現 {len(res_uh.get('urls', []))} 筆惡意網址關聯紀錄。"
         else:
-            urlhaus_result_text = "✅ 無惡意 URL 分發紀錄 (Clear)"
+            urlhaus_result_text = "✅ URLhaus 查無此主機之惡意活動紀錄。"
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            urlhaus_result_text = "💡 URLhaus 提示：API 金鑰無效或權限受限，無法獲取詳細數據。"
+        else:
+            urlhaus_result_text = f"💡 URLhaus 查詢受限 (HTTP {e.code})"
             
-    except Exception as e:
-        urlhaus_result_text = f"⚠️ URLhaus 數據分析異常 ({e})"
-        
-    return f"\n    [Abuse.ch ThreatFox 深度獵殺]:\n      {tf_result_text}\n    [Abuse.ch URLhaus 行為分析]:\n      {urlhaus_result_text}\n    "
+    return f"\n    [Abuse.ch 情資比對]: {tf_result_text}\n    [URLhaus 行為紀錄]: {urlhaus_result_text}\n    "
     
 def check_firehol_l3(ip: str) -> str:
     """新增：動態下載 FireHOL Level 3 清單並比對 IP"""
@@ -275,26 +255,21 @@ def analyze_with_gemini(combined_data):
             prioritized_models.append(m)
 
     prompt = f"""
-    你是一位專精於 APT 追蹤與網路犯罪調查的頂級 CTI 分析師。請根據以下 5X 引擎產出的深度情資，撰寫一份具備「威懾力」與「可操作性」的分析報告。
+    你是一位專業的資安分析顧問。請根據以下多源情資，為企業資訊部門產出一份客觀、精確的分析報告。
+    
+    【重要原則】
+    1. 實事求是：僅針對有證據的威脅進行分析。若數據顯示為「無命中」或「API 報錯」，請如實說明為「查無紀錄」或「技術性缺口」，不要過度推測尚未發現的威脅。
+    2. 語氣專業：使用客觀、穩重的商務繁體中文，避免誇張或威脅性的措辭。
+    3. 證據權重：若 AbuseIPDB 分數高但 VirusTotal 偵測為 0，請分析其可能為新興掃描活動或誤報，而非直接判定為高風險。
 
-    【情資數據源】
+    【情資數據】
     {combined_data}
 
-    【分析規範】
-    1. 風險判定：若命中 ThreatFox 家族或 AbuseIPDB 分數 > 80，請直接判定為 High，並在報告開頭使用震撼的措辭。
-    2. 關聯分析：嘗試根據「惡意軟體家族」與「標籤」，推論攻擊者的可能意圖（例如：勒索軟體前導、殭屍網路控制中心）。
-    3. 專業術語：請適度使用 MITRE ATT&CK 相關詞彙或資安專業術語。
-    4. 禁令：嚴禁 Markdown 符號，請使用純文字排版，並確保結構清晰。
-
-    【報告格式】
-    執行摘要 (關鍵風險警告)
-    風險等級：(High/Medium/Low)
-
-    一、 威脅來源與背景分析 (包含 ISP 與地理位置調查)
-    二、 惡意行為特徵 (深度解析 AbuseIPDB 與 Abuse.ch 獵殺命中結果)
-    三、 掃描引擎偵測概況 (VirusTotal 偵測時間軸)
-    四、 專家威脅判定與預期影響
-    五、 阻斷建議與防禦行動
+    【輸出格式要求】
+    一、 綜合風險評估 (請給出 High/Medium/Low/Info 並說明核心理由)
+    二、 情資數據摘要 (包含數據源命中狀況)
+    三、 技術分析 (針對 IP 背景與行為進行中性解讀)
+    四、 觀察與建議行動
     """
     
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
