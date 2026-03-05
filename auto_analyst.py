@@ -64,33 +64,40 @@ def get_vt_data(ip):
         return f"狀態: VT 查詢失敗或無回應 ({e})"
 
 def check_false_positive(ip):
+    """
+    改用 ThreatFox search_ioc 查詢來判斷是否為誤報。
+    原 hunting-api.abuse.ch get_fplist 需要研究員等級金鑰，一般免費 ThreatFox
+    金鑰無此權限，改以 ThreatFox 直接查詢結果作為誤報參考。
+    """
     tf_key = os.environ.get('THREATFOX_API_KEY')
     if not tf_key:
-        return "⚠️ 未設定 Abuse.ch 金鑰，跳過白名單檢查"
+        return "⚠️ 未設定 THREATFOX_API_KEY，跳過誤報白名單檢查"
 
-    url = "https://hunting-api.abuse.ch/api/v1/"
-    payload = {"query": "get_fplist", "format": "json"}
+    url = "https://threatfox-api.abuse.ch/api/v1/"
+    payload = {"query": "search_ioc", "search_term": ip}
     data = json.dumps(payload).encode('utf-8')
 
     req = urllib.request.Request(url, data=data)
     req.add_header('Content-Type', 'application/json')
     req.add_header('Auth-Key', tf_key.strip())
-    req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
 
     try:
         resp = urllib.request.urlopen(req, timeout=15)
         res = json.loads(resp.read())
 
-        if res.get('query_status') == 'ok':
-            fp_list = res.get('data', [])
-            if ip_in_fplist(ip, fp_list):
-                return f"✅ 【安全確認】此 IP ({ip}) 已被 Abuse.ch 官方明確列為 False Positive (誤報白名單)！請大幅降低其風險評級。"
-            else:
-                return "不在 Abuse.ch 官方誤報白名單中 (需依賴其他情資判斷)"
+        status = res.get('query_status')
+        if status == 'no_result':
+            return "✅ ThreatFox 查無此 IP 之威脅紀錄，誤報風險較低"
+        elif status == 'ok':
+            findings = res.get('data', [])
+            low_confidence = all(d.get('confidence_level', 100) < 30 for d in findings)
+            if low_confidence:
+                return f"⚠️ 存在低置信度 ({len(findings)} 筆) 紀錄，可能為誤報，建議人工複查"
+            return f"🔍 ThreatFox 查詢成功，命中 {len(findings)} 筆紀錄 (非誤報白名單)"
         else:
-            return f"⚠️ 獲取白名單失敗: {res.get('query_status')}"
+            return f"⚠️ ThreatFox 回應狀態異常: {status}"
     except Exception as e:
-        return f"⚠️ 白名單查詢異常 ({e})"
+        return f"⚠️ 誤報白名單查詢異常 ({e})"
 
 def get_abuse_ch_data(ip):
     tf_key = os.environ.get('THREATFOX_API_KEY')
@@ -127,13 +134,13 @@ def get_abuse_ch_data(ip):
             tf_result_text = f"⚠️ ThreatFox 查詢中斷 ({str(e)})"
 
     # --- 2. URLhaus 查詢 ---
+    # URLhaus 公開 API 不需要認證，移除非標準 User-Agent 避免觸發過濾
     try:
         url_uh = "https://urlhaus-api.abuse.ch/v1/host/"
         data_uh = urllib.parse.urlencode({"host": ip}).encode('utf-8')
         req_uh = urllib.request.Request(url_uh, data=data_uh)
-        req_uh.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+        # 不加自訂 User-Agent，使用 Python urllib 預設值即可通過 URLhaus 驗證
         
-        # 修正點：確保 res_uh 在 try 區塊內正確賦值，避免 NameError
         with urllib.request.urlopen(req_uh, timeout=15) as resp_uh:
             res_uh = json.loads(resp_uh.read())
         
